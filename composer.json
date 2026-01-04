@@ -1,0 +1,25 @@
+{
+    "name": "enquiry-backend/standalone",
+    "description": "Standalone enquiry form backend for shared hosting",
+    "type": "project",
+    "require": {
+        "php": ">=8.1",
+        "ext-sodium": "*",
+        "ext-pdo": "*",
+        "ext-gd": "*",
+        "phpmailer/phpmailer": "^6.9",
+        "firebase/php-jwt": "^6.10"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
+

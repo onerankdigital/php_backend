@@ -1,0 +1,33 @@
+# Enable RewriteEngine
+RewriteEngine On
+
+# --- Handle CORS (Allow frontend from different domain) ---
+# CORS is now handled in api/index.php to have more control
+
+# --- Handle preflight OPTIONS requests for CORS FIRST ---
+# Route OPTIONS requests to api/index.php to handle CORS properly
+RewriteCond %{REQUEST_METHOD} OPTIONS
+RewriteCond %{REQUEST_URI} api/
+RewriteRule .* api/index.php [L]
+
+# --- Route ALL API requests to api/index.php ---
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} api/
+RewriteRule .* api/index.php [L]
+
+# --- Security Headers ---
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
+
+# --- Prevent directory listing ---
+Options -Indexes
+
+# --- Protect config files ---
+<FilesMatch "^(config\.php|\.env|composer\.json|composer\.lock)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
