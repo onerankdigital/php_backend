@@ -1,5 +1,5 @@
 {
-    "name": "enquiry-backend/standalone",
+    "name": "backend/standalone",
     "description": "Standalone enquiry form backend for shared hosting",
     "type": "project",
     "require": {
