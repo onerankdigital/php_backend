@@ -417,6 +417,27 @@ File Link: {$fileLink}
         $enquiryDetailsValue = trim($enquiryData['enquiry_details'] ?? '');
         $enquiryDetails = !empty($enquiryDetailsValue) ? nl2br(htmlspecialchars($enquiryDetailsValue, ENT_QUOTES, 'UTF-8')) : '<span style="color: #999999; font-style: italic;">N/A</span>';
         
+        // Format file link - show only filename as clickable link if present, otherwise N/A
+        $fileLinkValue = trim($enquiryData['file_link'] ?? '');
+        $fileLink = '';
+        if (!empty($fileLinkValue)) {
+            $escapedLink = htmlspecialchars($fileLinkValue, ENT_QUOTES, 'UTF-8');
+            // Extract filename from URL/path
+            $fileName = basename(parse_url($fileLinkValue, PHP_URL_PATH));
+            // If basename doesn't work (e.g., for query strings), try direct basename
+            if (empty($fileName) || $fileName === '/') {
+                $fileName = basename($fileLinkValue);
+            }
+            // If still empty, use the full link as fallback
+            if (empty($fileName)) {
+                $fileName = $fileLinkValue;
+            }
+            $escapedFileName = htmlspecialchars($fileName, ENT_QUOTES, 'UTF-8');
+            $fileLink = '<a href="' . $escapedLink . '" target="_blank" style="color: #667eea; text-decoration: none;">' . $escapedFileName . '</a>';
+        } else {
+            $fileLink = '<span style="color: #999999; font-style: italic;">N/A</span>';
+        }
+        
         return '
 <!DOCTYPE html>
 <html lang="en">
@@ -450,16 +471,6 @@ File Link: {$fileLink}
                             </p>
                             
                             <h2 style="margin: 0 0 30px 0; color: #333333; font-size: 22px; border-bottom: 2px solid #667eea; padding-bottom: 10px;">Your Enquiry Details</h2>
-                            
-                            <!-- Enquiry ID -->
-                            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 30px; background-color: #f8f9fa; border-radius: 6px; padding: 15px;">
-                                <tr>
-                                    <td style="padding: 8px 0;">
-                                        <strong style="color: #667eea; font-size: 14px;">Enquiry ID:</strong>
-                                        <span style="color: #333333; font-size: 14px; margin-left: 10px;">#' . $enquiryId . '</span>
-                                    </td>
-                                </tr>
-                            </table>
                             
                             <!-- Contact Information Table -->
                             <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
@@ -495,6 +506,12 @@ File Link: {$fileLink}
                                 </tr>
                                 <tr>
                                     <td style="padding: 15px; color: #333333; line-height: 1.6;">' . $enquiryDetails . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 15px; border-top: 1px solid #e0e0e0;">
+                                        <strong style="color: #555555; font-size: 14px;">File Link:</strong>
+                                        <div style="margin-top: 8px; color: #333333;">' . $fileLink . '</div>
+                                    </td>
                                 </tr>
                             </table>
                             
@@ -545,6 +562,17 @@ File Link: {$fileLink}
         $address = !empty(trim($enquiryData['address'] ?? '')) ? trim($enquiryData['address']) : 'N/A';
         $enquiryDetails = !empty(trim($enquiryData['enquiry_details'] ?? '')) ? trim($enquiryData['enquiry_details']) : 'N/A';
         
+        // Extract filename from file link for plain text display
+        $fileLinkValue = trim($enquiryData['file_link'] ?? '');
+        $fileLink = 'N/A';
+        if (!empty($fileLinkValue)) {
+            $fileName = basename(parse_url($fileLinkValue, PHP_URL_PATH));
+            if (empty($fileName) || $fileName === '/') {
+                $fileName = basename($fileLinkValue);
+            }
+            $fileLink = !empty($fileName) ? $fileName : $fileLinkValue;
+        }
+        
         return "
 Dear {$fullName},
 
@@ -552,7 +580,6 @@ Thank you for contacting us! We have received your enquiry and will get back to 
 
 Your Enquiry Details:
 -------------------
-Enquiry ID: #{$enquiryId}
 
 Company Name: {$companyName}
 Full Name: {$fullName}
@@ -562,6 +589,8 @@ Address: {$address}
 
 Enquiry Details:
 {$enquiryDetails}
+
+File Link: {$fileLink}
 {$extraFieldsSection}
 
 We appreciate your interest and will respond within 24-48 hours.
