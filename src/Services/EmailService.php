@@ -36,7 +36,7 @@ class EmailService
     }
 
     /**
-     * Send enquiry notification to owner(s) and admin
+     * Send enquiry notification to owner(s) and admin as separate emails
      * 
      * @param array $enquiryData Enquiry data
      * @param int $enquiryId Enquiry ID
@@ -52,16 +52,67 @@ class EmailService
             return false;
         }
 
-        // Determine recipient emails: use provided emails or fall back to config
-        $recipientEmails = $this->getOwnerEmails($ownerEmails);
+        // Determine owner emails: use provided emails or fall back to config
+        $ownerRecipientEmails = $this->getOwnerEmails($ownerEmails);
         
-        // Add admin email to recipients
-        if ($this->adminEmail && !in_array($this->adminEmail, $recipientEmails)) {
-            $recipientEmails[] = $this->adminEmail;
+        $success = false;
+        
+        // Send one email to all owner(s) from frontend/config (grouped together)
+        if (!empty($ownerRecipientEmails)) {
+            $ownerSuccess = $this->sendEmailToRecipients(
+                $ownerRecipientEmails,
+                $enquiryData,
+                $enquiryId,
+                $extraFields,
+                $fieldLabels,
+                'owner'
+            );
+            $success = $success || $ownerSuccess;
         }
         
+        // Send separate email to admin (if configured and different from owner emails)
+        // This ensures admin doesn't see owner emails and vice versa
+        if ($this->adminEmail && !in_array($this->adminEmail, $ownerRecipientEmails)) {
+            $adminSuccess = $this->sendEmailToRecipients(
+                [$this->adminEmail],
+                $enquiryData,
+                $enquiryId,
+                $extraFields,
+                $fieldLabels,
+                'admin'
+            );
+            $success = $success || $adminSuccess;
+        }
+        
+        if (!$success) {
+            error_log("No valid recipient emails configured. Email not sent.");
+        }
+        
+        return $success;
+    }
+    
+    /**
+     * Send email to specific recipients (helper method for separate emails)
+     * Sends one email to all recipients in the array (they can see each other)
+     * But this is called separately for owners and admin, so they don't see each other
+     * 
+     * @param array $recipientEmails Array of recipient email addresses
+     * @param array $enquiryData Enquiry data
+     * @param int $enquiryId Enquiry ID
+     * @param array $extraFields Extra fields
+     * @param array $fieldLabels Field labels
+     * @param string $recipientType Type of recipient ('owner' or 'admin')
+     * @return bool Success status
+     */
+    private function sendEmailToRecipients(
+        array $recipientEmails,
+        array $enquiryData,
+        int $enquiryId,
+        array $extraFields,
+        array $fieldLabels,
+        string $recipientType = 'owner'
+    ): bool {
         if (empty($recipientEmails)) {
-            error_log("No owner email configured. Email to owner not sent.");
             return false;
         }
 
@@ -79,7 +130,7 @@ class EmailService
 
             $mail->setFrom($this->smtpFromEmail, $this->smtpFromName);
             
-            // Add all recipient emails
+            // Add all recipients for this group (owners together, admin separately)
             foreach ($recipientEmails as $email) {
                 $mail->addAddress($email);
             }
@@ -98,7 +149,8 @@ class EmailService
             return true;
         } catch (\Exception $e) {
             $errorInfo = isset($mail) ? $mail->ErrorInfo : $e->getMessage();
-            error_log("Error sending owner email: " . $errorInfo);
+            $recipientTypeLabel = $recipientType === 'admin' ? 'admin' : 'owner';
+            error_log("Error sending {$recipientTypeLabel} email: " . $errorInfo);
             return false;
         }
     }
@@ -190,6 +242,27 @@ class EmailService
         $enquiryDetailsValue = trim($enquiryData['enquiry_details'] ?? '');
         $enquiryDetails = !empty($enquiryDetailsValue) ? nl2br(htmlspecialchars($enquiryDetailsValue, ENT_QUOTES, 'UTF-8')) : '<span style="color: #999999; font-style: italic;">N/A</span>';
         
+        // Format file link - show only filename as clickable link if present, otherwise N/A
+        $fileLinkValue = trim($enquiryData['file_link'] ?? '');
+        $fileLink = '';
+        if (!empty($fileLinkValue)) {
+            $escapedLink = htmlspecialchars($fileLinkValue, ENT_QUOTES, 'UTF-8');
+            // Extract filename from URL/path
+            $fileName = basename(parse_url($fileLinkValue, PHP_URL_PATH));
+            // If basename doesn't work (e.g., for query strings), try direct basename
+            if (empty($fileName) || $fileName === '/') {
+                $fileName = basename($fileLinkValue);
+            }
+            // If still empty, use the full link as fallback
+            if (empty($fileName)) {
+                $fileName = $fileLinkValue;
+            }
+            $escapedFileName = htmlspecialchars($fileName, ENT_QUOTES, 'UTF-8');
+            $fileLink = '<a href="' . $escapedLink . '" target="_blank" style="color: #667eea; text-decoration: none;">' . $escapedFileName . '</a>';
+        } else {
+            $fileLink = '<span style="color: #999999; font-style: italic;">N/A</span>';
+        }
+        
         return '
 <!DOCTYPE html>
 <html lang="en">
@@ -215,16 +288,6 @@ class EmailService
                     <tr>
                         <td style="padding: 40px;">
                             <h2 style="margin: 0 0 30px 0; color: #333333; font-size: 22px; border-bottom: 2px solid #667eea; padding-bottom: 10px;">New Enquiry Form Submission</h2>
-                            
-                            <!-- Enquiry ID -->
-                            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 30px; background-color: #f8f9fa; border-radius: 6px; padding: 15px;">
-                                <tr>
-                                    <td style="padding: 8px 0;">
-                                        <strong style="color: #667eea; font-size: 14px;">Enquiry ID:</strong>
-                                        <span style="color: #333333; font-size: 14px; margin-left: 10px;">#' . $enquiryId . '</span>
-                                    </td>
-                                </tr>
-                            </table>
                             
                             <!-- Contact Information Table -->
                             <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
@@ -260,6 +323,12 @@ class EmailService
                                 </tr>
                                 <tr>
                                     <td style="padding: 15px; color: #333333; line-height: 1.6;">' . $enquiryDetails . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 15px; border-top: 1px solid #e0e0e0;">
+                                        <strong style="color: #555555; font-size: 14px;">File Link:</strong>
+                                        <div style="margin-top: 8px; color: #333333;">' . $fileLink . '</div>
+                                    </td>
                                 </tr>
                             </table>
                             
@@ -301,10 +370,19 @@ class EmailService
         $address = !empty(trim($enquiryData['address'] ?? '')) ? trim($enquiryData['address']) : 'N/A';
         $enquiryDetails = !empty(trim($enquiryData['enquiry_details'] ?? '')) ? trim($enquiryData['enquiry_details']) : 'N/A';
         
+        // Extract filename from file link for plain text display
+        $fileLinkValue = trim($enquiryData['file_link'] ?? '');
+        $fileLink = 'N/A';
+        if (!empty($fileLinkValue)) {
+            $fileName = basename(parse_url($fileLinkValue, PHP_URL_PATH));
+            if (empty($fileName) || $fileName === '/') {
+                $fileName = basename($fileLinkValue);
+            }
+            $fileLink = !empty($fileName) ? $fileName : $fileLinkValue;
+        }
+        
         return "
 ONE RANK DIGITAL - New Enquiry Form Submission
-
-Enquiry ID: #{$enquiryId}
 
 Company Name: {$companyName}
 Full Name: {$fullName}
@@ -316,6 +394,8 @@ Address:
 
 Enquiry Details:
 {$enquiryDetails}
+
+File Link: {$fileLink}
 {$extraFieldsSection}
 
 © " . date('Y') . " One Rank Digital. All rights reserved.

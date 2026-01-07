@@ -91,6 +91,7 @@ class EnquiryService
             'submitted_at' => $encrypted['submitted_at'],
             'ip_address' => $data['ip_address'] ?? 'Unknown',
             'user_agent' => $data['user_agent'] ?? 'Unknown',
+            'file_link' => $data['file_link'] ?? null,
         ]);
         
         $this->emailService->sendOwnerNotification($enquiryDataForEmail, $id, $extraFields, $fieldLabels, $ownerEmails);
