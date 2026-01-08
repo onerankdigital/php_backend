@@ -31,6 +31,13 @@ class KeyRotationController
             return;
         }
 
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+
         $data = json_decode(file_get_contents('php://input'), true);
 
         // Optional: Allow custom keys, or generate automatically
@@ -183,9 +190,22 @@ class KeyRotationController
 
     private function sendResponse(array $data, int $statusCode = 200): void
     {
+        // Clean any output buffers to prevent JSON corruption
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        
         http_response_code($statusCode);
-        header('Content-Type: application/json');
-        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        header('Content-Type: application/json; charset=utf-8');
+        
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        
+        if ($json === false) {
+            // JSON encoding failed, send a simple error
+            $json = '{"error":"Internal Server Error - Invalid response data","success":false}';
+        }
+        
+        echo $json;
         exit;
     }
 }

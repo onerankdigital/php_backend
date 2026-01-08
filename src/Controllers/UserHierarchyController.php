@@ -66,6 +66,13 @@ class UserHierarchyController
             return;
         }
 
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+
         $data = json_decode(file_get_contents('php://input'), true);
         $parentUserId = $data['parent_user_id'] ?? null;
         $childUserId = $data['child_user_id'] ?? null;

@@ -409,18 +409,24 @@ class Routes
 
     private function handleClientRoutes(string $method, array $parts): void
     {
+        error_log('Routes::handleClientRoutes - Method: ' . $method . ', Parts count: ' . count($parts));
         $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
+        error_log('Routes::handleClientRoutes - User role: ' . $userRole);
         
         // POST /api/clients (admin only)
         if (count($parts) === 1 && $method === 'POST') {
             $this->requireAdmin();
+            error_log('Routes::handleClientRoutes - Calling create');
             $this->clientController->create();
+            error_log('Routes::handleClientRoutes - create completed');
             return;
         }
 
         // GET /api/clients (admin, sales_manager, sales_person, employee)
         if (count($parts) === 1 && $method === 'GET') {
+            error_log('Routes::handleClientRoutes - Calling getAll');
             $this->clientController->getAll();
+            error_log('Routes::handleClientRoutes - getAll completed');
             return;
         }
 

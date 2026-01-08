@@ -11,6 +11,31 @@ class ServiceController {
     }
 
     /**
+     * Send JSON response with proper headers
+     */
+    private function sendResponse(array $data, int $statusCode = 200): void {
+        // Clean output buffers
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        
+        http_response_code($statusCode);
+        header('Content-Type: application/json; charset=utf-8');
+        
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        
+        if ($json === false) {
+            $json = json_encode([
+                'success' => false,
+                'error' => 'Internal Server Error - Invalid response data'
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+        
+        echo $json;
+        exit;
+    }
+
+    /**
      * Get all services (optionally with sub-services)
      */
     public function getAllServices() {
@@ -24,17 +49,16 @@ class ServiceController {
                 $services = $this->serviceRepo->getAllServices($activeOnly);
             }
             
-            http_response_code(200);
-            echo json_encode([
+            $this->sendResponse([
                 'success' => true,
                 'data' => $services
             ]);
         } catch (\Exception $e) {
-            http_response_code(500);
-            echo json_encode([
+            error_log('ServiceController::getAllServices - Error: ' . $e->getMessage());
+            $this->sendResponse([
                 'success' => false,
-                'message' => 'Failed to fetch services'
-            ]);
+                'error' => 'Failed to fetch services'
+            ], 500);
         }
     }
 
@@ -46,28 +70,26 @@ class ServiceController {
             $service = $this->serviceRepo->getServiceById($id);
             
             if (!$service) {
-                http_response_code(404);
-                echo json_encode([
+                $this->sendResponse([
                     'success' => false,
-                    'message' => 'Service not found'
-                ]);
+                    'error' => 'Service not found'
+                ], 404);
                 return;
             }
             
             // Get sub-services
             $service['sub_services'] = $this->serviceRepo->getSubServicesByServiceId($id);
             
-            http_response_code(200);
-            echo json_encode([
+            $this->sendResponse([
                 'success' => true,
                 'data' => $service
             ]);
         } catch (\Exception $e) {
-            http_response_code(500);
-            echo json_encode([
+            error_log('ServiceController::getService - Error: ' . $e->getMessage());
+            $this->sendResponse([
                 'success' => false,
-                'message' => 'Failed to fetch service'
-            ]);
+                'error' => 'Failed to fetch service'
+            ], 500);
         }
     }
 
@@ -76,6 +98,17 @@ class ServiceController {
      */
     public function createService() {
         try {
+            // Validate Content-Type header - only JSON is allowed
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (strpos($contentType, 'application/json') === false) {
+                http_response_code(400);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Content-Type must be application/json'
+                ]);
+                return;
+            }
+
             $data = json_decode(file_get_contents('php://input'), true);
             
             if (!isset($data['service_name']) || !isset($data['service_code'])) {
@@ -118,6 +151,17 @@ class ServiceController {
      */
     public function updateService($id) {
         try {
+            // Validate Content-Type header - only JSON is allowed
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (strpos($contentType, 'application/json') === false) {
+                http_response_code(400);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Content-Type must be application/json'
+                ]);
+                return;
+            }
+
             $data = json_decode(file_get_contents('php://input'), true);
             
             if (!isset($data['service_name']) || !isset($data['service_code'])) {
@@ -190,17 +234,16 @@ class ServiceController {
             $activeOnly = $_GET['active_only'] ?? false;
             $subServices = $this->serviceRepo->getSubServicesByServiceId($serviceId, $activeOnly);
             
-            http_response_code(200);
-            echo json_encode([
+            $this->sendResponse([
                 'success' => true,
                 'data' => $subServices
             ]);
         } catch (\Exception $e) {
-            http_response_code(500);
-            echo json_encode([
+            error_log('ServiceController::getSubServices - Error: ' . $e->getMessage());
+            $this->sendResponse([
                 'success' => false,
-                'message' => 'Failed to fetch sub-services'
-            ]);
+                'error' => 'Failed to fetch sub-services'
+            ], 500);
         }
     }
 
@@ -209,6 +252,17 @@ class ServiceController {
      */
     public function createSubService() {
         try {
+            // Validate Content-Type header - only JSON is allowed
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (strpos($contentType, 'application/json') === false) {
+                http_response_code(400);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Content-Type must be application/json'
+                ]);
+                return;
+            }
+
             $data = json_decode(file_get_contents('php://input'), true);
             
             if (!isset($data['service_id']) || !isset($data['sub_service_name']) || !isset($data['sub_service_code'])) {
@@ -251,6 +305,17 @@ class ServiceController {
      */
     public function updateSubService($id) {
         try {
+            // Validate Content-Type header - only JSON is allowed
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (strpos($contentType, 'application/json') === false) {
+                http_response_code(400);
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Content-Type must be application/json'
+                ]);
+                return;
+            }
+
             $data = json_decode(file_get_contents('php://input'), true);
             
             if (!isset($data['service_id']) || !isset($data['sub_service_name']) || !isset($data['sub_service_code'])) {

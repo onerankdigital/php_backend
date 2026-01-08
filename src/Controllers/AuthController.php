@@ -19,6 +19,14 @@ class AuthController
     {
         error_log('AuthController::register - Starting registration');
         
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            error_log('AuthController::register - Invalid Content-Type: ' . $contentType);
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+        
         $data = json_decode(file_get_contents('php://input'), true);
         error_log('AuthController::register - Data received: ' . json_encode(['has_data' => !empty($data), 'email' => $data['email'] ?? 'missing']));
 
@@ -65,6 +73,15 @@ class AuthController
     public function login(): void
     {
         error_log('AuthController::login - Starting');
+        
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            error_log('AuthController::login - Invalid Content-Type: ' . $contentType);
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+        
         $data = json_decode(file_get_contents('php://input'), true);
         error_log('AuthController::login - Data received: ' . json_encode(['email' => $data['email'] ?? 'missing']));
 
@@ -120,6 +137,13 @@ class AuthController
 
     public function forgotPassword(): void
     {
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+
         $data = json_decode(file_get_contents('php://input'), true);
 
         if (!$data) {
@@ -157,6 +181,13 @@ class AuthController
         $data = [];
         
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            // Validate Content-Type header - only JSON is allowed
+            $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+            if (strpos($contentType, 'application/json') === false) {
+                $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+                return;
+            }
+            
             $data = json_decode(file_get_contents('php://input'), true);
             if (!$data) {
                 $this->sendResponse(['error' => 'Invalid JSON'], 400);
@@ -232,6 +263,13 @@ class AuthController
 
     public function approveUser(): void
     {
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+
         $data = json_decode(file_get_contents('php://input'), true);
 
         if (!$data) {

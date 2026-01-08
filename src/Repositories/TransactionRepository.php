@@ -206,8 +206,13 @@ class TransactionRepository
             $params['client_id'] = $filters['client_id'];
         }
         if (isset($filters['payment_type'])) {
-            $whereClauses[] = 't.payment_type = :payment_type';
+            // payment_type filter should match payment_method_id or payment_method code
+            $whereClauses[] = 't.payment_method_id = :payment_type';
             $params['payment_type'] = $filters['payment_type'];
+        }
+        if (isset($filters['payment_method_id'])) {
+            $whereClauses[] = 't.payment_method_id = :payment_method_id';
+            $params['payment_method_id'] = $filters['payment_method_id'];
         }
         if (isset($filters['date_from'])) {
             $whereClauses[] = 't.payment_date >= :date_from';
@@ -322,13 +327,13 @@ class TransactionRepository
      */
     public function getStatistics(?array $filters = null): array
     {
-        $whereClauses = ['is_deleted = 0'];
+        $whereClauses = ['t.is_deleted = 0'];
         $params = [];
 
         if (isset($filters['client_ids']) && is_array($filters['client_ids']) && !empty($filters['client_ids'])) {
             $placeholders = implode(',', array_fill(0, count($filters['client_ids']), '?'));
-            $whereClauses[] = "client_id IN ($placeholders)";
-            $params = $filters['client_ids'];
+            $whereClauses[] = "t.client_id IN ($placeholders)";
+            $params = array_merge($params, $filters['client_ids']);
         }
 
         $whereClause = implode(' AND ', $whereClauses);
@@ -336,13 +341,15 @@ class TransactionRepository
         $sql = "
             SELECT 
                 COUNT(*) as total_transactions,
-                COALESCE(SUM(amount), 0) as total_amount,
-                COALESCE(AVG(amount), 0) as average_amount,
-                payment_type,
+                COALESCE(SUM(t.amount), 0) as total_amount,
+                COALESCE(AVG(t.amount), 0) as average_amount,
+                pm.method_name as payment_method_name,
+                pm.method_code as payment_method_code,
                 COUNT(*) as type_count
-            FROM transactions
+            FROM transactions t
+            LEFT JOIN payment_methods pm ON t.payment_method_id = pm.id
             WHERE $whereClause
-            GROUP BY payment_type
+            GROUP BY pm.id, pm.method_name, pm.method_code
         ";
 
         $stmt = $this->db->prepare($sql);

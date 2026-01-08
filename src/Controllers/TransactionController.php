@@ -38,6 +38,13 @@ class TransactionController
             return;
         }
 
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+
         $data = json_decode(file_get_contents('php://input'), true);
         if (!$data) {
             $this->sendResponse(['error' => 'Invalid JSON'], 400);
@@ -239,6 +246,13 @@ class TransactionController
             return;
         }
 
+        // Validate Content-Type header - only JSON is allowed
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (strpos($contentType, 'application/json') === false) {
+            $this->sendResponse(['error' => 'Content-Type must be application/json'], 400);
+            return;
+        }
+
         $data = json_decode(file_get_contents('php://input'), true);
         if (!$data) {
             $this->sendResponse(['error' => 'Invalid JSON'], 400);
@@ -295,25 +309,34 @@ class TransactionController
      */
     public function getStatistics(): void
     {
-        $userId = $_SERVER['AUTH_USER_ID'] ?? null;
-        if (!$userId) {
-            $this->sendResponse(['error' => 'Unauthorized'], 401);
-            return;
-        }
-
-        // Check permission
-        if (!$this->permissionService->canAccess((int)$userId, 'transactions', 'read')) {
-            $this->sendResponse(['error' => 'Permission denied'], 403);
-            return;
-        }
-
         try {
+            error_log('TransactionController::getStatistics - Starting');
+            $userId = $_SERVER['AUTH_USER_ID'] ?? null;
+            if (!$userId) {
+                error_log('TransactionController::getStatistics - No user ID');
+                $this->sendResponse(['error' => 'Unauthorized'], 401);
+                return;
+            }
+
+            error_log('TransactionController::getStatistics - User ID: ' . $userId);
+            // Check permission
+            if (!$this->permissionService->canAccess((int)$userId, 'transactions', 'read')) {
+                error_log('TransactionController::getStatistics - Permission denied');
+                $this->sendResponse(['error' => 'Permission denied'], 403);
+                return;
+            }
+
+            error_log('TransactionController::getStatistics - Calling service->getStatistics');
             $statistics = $this->transactionService->getStatistics((int)$userId);
+            error_log('TransactionController::getStatistics - Service returned statistics');
+            
             $this->sendResponse([
                 'success' => true,
                 'data' => $statistics
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            error_log('TransactionController::getStatistics - Exception: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            error_log('TransactionController::getStatistics - Stack trace: ' . $e->getTraceAsString());
             $this->sendResponse(['error' => $e->getMessage()], 500);
         }
     }
@@ -337,9 +360,22 @@ class TransactionController
 
     private function sendResponse(array $data, int $statusCode = 200): void
     {
+        // Clean any output buffers to prevent JSON corruption
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        
         http_response_code($statusCode);
-        header('Content-Type: application/json');
-        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        header('Content-Type: application/json; charset=utf-8');
+        
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        
+        if ($json === false) {
+            // JSON encoding failed, send a simple error
+            $json = '{"error":"Internal Server Error - Invalid response data","success":false}';
+        }
+        
+        echo $json;
         exit;
     }
 }
