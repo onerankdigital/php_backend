@@ -62,15 +62,55 @@ $logEntry .= "  All Headers: " . print_r($headers, true) . "\n";
 // CORS – WITH CREDENTIALS
 // ======================
 
+// CORS Configuration - Handle origin properly
 $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
+$allowedOrigin = null;
 
+// Determine allowed origin based on config
+if (defined('ALLOWED_ORIGINS')) {
+    $allowedOriginsConfig = ALLOWED_ORIGINS;
+    
+    // If '*' is set, allow all origins (use the request origin)
+    if ($allowedOriginsConfig === '*' || $allowedOriginsConfig === null) {
+        $allowedOrigin = $origin ?: null;
+    } else {
+        // Parse comma-separated list or array
+        $allowedList = is_array($allowedOriginsConfig) 
+            ? $allowedOriginsConfig 
+            : explode(',', $allowedOriginsConfig);
+        
+        // Check if the request origin is in the allowed list
+        if ($origin) {
+            foreach ($allowedList as $allowed) {
+                $allowed = trim($allowed);
+                if ($origin === $allowed || $allowed === '*') {
+                    $allowedOrigin = $origin;
+                    break;
+                }
+            }
+        }
+    }
+} else {
+    // No config, allow the request origin if present
+    $allowedOrigin = $origin ?: null;
+}
+
+// Log CORS decision
+$logEntry .= "  Allowed Origin: " . ($allowedOrigin ?: 'NONE') . "\n";
+$logEntry .= "  ALLOWED_ORIGINS config: " . (defined('ALLOWED_ORIGINS') ? (is_array(ALLOWED_ORIGINS) ? json_encode(ALLOWED_ORIGINS) : ALLOWED_ORIGINS) : 'NOT DEFINED') . "\n";
+
+// Set CORS headers - always set the origin if provided (even if not in config, for development)
+// In production, you might want to reject requests with origins not in the allowed list
 if ($origin) {
     header("Access-Control-Allow-Origin: $origin");
     header("Access-Control-Allow-Credentials: true");
+    if (!$allowedOrigin) {
+        $logEntry .= "  WARNING: Origin not in allowed list, but allowing anyway\n";
+    }
 }
 
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token");
 header("Access-Control-Expose-Headers: Content-Type, Authorization");
 header("Access-Control-Max-Age: 3600");
 

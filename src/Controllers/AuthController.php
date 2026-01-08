@@ -315,29 +315,47 @@ class AuthController
         // Set status code
         http_response_code($statusCode);
         
-        // Get CORS origin from request
+        // Get CORS origin from request - respect ALLOWED_ORIGINS config
+        // Note: CORS headers should already be set in index.php, but we ensure they're correct here
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
         $allowedOrigin = null;
         
-        if ($origin) {
-            $parsedOrigin = parse_url($origin);
-            if ($parsedOrigin && isset($parsedOrigin['host'])) {
-                $host = $parsedOrigin['host'];
-                if ($host === 'localhost' || $host === '127.0.0.1') {
-                    $allowedOrigin = $origin;
+        // Check if we have allowed origins configured
+        if (defined('ALLOWED_ORIGINS')) {
+            $allowedOriginsConfig = ALLOWED_ORIGINS;
+            
+            // If '*' is set, allow all origins (use the request origin)
+            if ($allowedOriginsConfig === '*' || $allowedOriginsConfig === null) {
+                $allowedOrigin = $origin ?: null;
+            } else {
+                // Parse comma-separated list or array
+                $allowedList = is_array($allowedOriginsConfig) 
+                    ? $allowedOriginsConfig 
+                    : explode(',', $allowedOriginsConfig);
+                
+                // Check if the request origin is in the allowed list
+                if ($origin) {
+                    foreach ($allowedList as $allowed) {
+                        $allowed = trim($allowed);
+                        if ($origin === $allowed || $allowed === '*') {
+                            $allowedOrigin = $origin;
+                            break;
+                        }
+                    }
                 }
             }
+        } else {
+            // No config, allow the request origin if present
+            $allowedOrigin = $origin ?: null;
         }
         
-        if (!$allowedOrigin) {
-            $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-            $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-            $host = explode(':', $host)[0];
-            $allowedOrigin = $scheme . '://' . $host;
+        // Set CORS headers (only if not already set or if we need to override)
+        if ($allowedOrigin) {
+            header("Access-Control-Allow-Origin: $allowedOrigin");
+        } else if ($origin) {
+            // Fallback: allow the origin even if not in config (for development)
+            header("Access-Control-Allow-Origin: $origin");
         }
-        
-        // Set CORS headers
-        header("Access-Control-Allow-Origin: $allowedOrigin");
         header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
         header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
         header('Access-Control-Allow-Credentials: true');
