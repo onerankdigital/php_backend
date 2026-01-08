@@ -8,11 +8,11 @@ use App\Services\ClientService;
 
 class ClientController
 {
-    private ClientService $clientService;
+    private ClientService $service;
 
-    public function __construct(ClientService $clientService)
+    public function __construct(ClientService $service)
     {
-        $this->clientService = $clientService;
+        $this->service = $service;
     }
 
     public function create(): void
@@ -25,30 +25,19 @@ class ClientController
         }
 
         try {
-            $client = $this->clientService->create($data);
+            // Get the user who is creating this client
+            $createdByUserId = $_SERVER['AUTH_USER_ID'] ?? null;
+            
+            // Create client and auto-assign creator
+            $client = $this->service->create($data, $createdByUserId);
+            
             $this->sendResponse([
                 'success' => true,
-                'message' => 'Client created successfully',
+                'message' => 'Client created successfully and assigned to you',
                 'data' => $client
             ], 201);
         } catch (\InvalidArgumentException $e) {
             $this->sendResponse(['error' => $e->getMessage()], 400);
-        } catch (\Exception $e) {
-            $this->sendResponse(['error' => $e->getMessage()], 500);
-        }
-    }
-
-    public function get(int $id): void
-    {
-        try {
-            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? null;
-            $client = $this->clientService->get($id, $userRole);
-            $this->sendResponse([
-                'success' => true,
-                'data' => $client
-            ]);
-        } catch (\RuntimeException $e) {
-            $this->sendResponse(['error' => $e->getMessage()], 404);
         } catch (\Exception $e) {
             $this->sendResponse(['error' => $e->getMessage()], 500);
         }
@@ -59,49 +48,45 @@ class ClientController
         try {
             $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 100;
             $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
-            $filter = $_GET['filter'] ?? null; // 'direct', 'sales_person', or null for all
-            $salesPersonId = isset($_GET['sales_person_id']) ? (int)$_GET['sales_person_id'] : null; // Filter by specific sales person
-
-            $limit = max(1, min(1000, $limit));
-            $offset = max(0, $offset);
-
-            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? null;
+            $filter = isset($_GET['filter']) ? $_GET['filter'] : null;
+            $userId = $_SERVER['AUTH_USER_ID'] ?? null;
             
-            // Debug logging for sales managers
-            if ($userRole === 'sales_manager') {
-                $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-                error_log("ClientController::getAll - User Role: sales_manager");
-                error_log("ClientController::getAll - Sales Manager ID: " . ($salesManagerId ?? 'NULL'));
-            }
-            
-            $clients = $this->clientService->getAll($limit, $offset, $userRole, $filter, $salesPersonId);
-            
-            // Debug logging
-            if ($userRole === 'sales_manager') {
-                error_log("ClientController::getAll - Clients returned: " . count($clients));
-            }
-            
-            // Get total count for pagination
-            $totalCount = $this->clientService->getTotalCount($userRole, $filter, $salesPersonId);
+            $clients = $this->service->getAll($limit, $offset, $filter, $userId);
             
             $this->sendResponse([
                 'success' => true,
-                'data' => $clients,
-                'count' => count($clients),
-                'total' => $totalCount,
-                'limit' => $limit,
-                'offset' => $offset,
-                'filter' => $filter,
-                'sales_person_id' => $salesPersonId
+                'data' => $clients
             ]);
         } catch (\Exception $e) {
-            error_log("ClientController::getAll - Exception: " . $e->getMessage());
-            error_log("ClientController::getAll - Stack trace: " . $e->getTraceAsString());
             $this->sendResponse(['error' => $e->getMessage()], 500);
         }
     }
 
-    public function update(int $id): void
+    /**
+     * Get client by client_id (VARCHAR)
+     */
+    public function get(string $clientId): void
+    {
+        try {
+            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
+            $userId = $_SERVER['AUTH_USER_ID'] ?? null;
+            
+            $client = $this->service->get($clientId, $userRole, $userId);
+            $this->sendResponse([
+                'success' => true,
+                'data' => $client
+            ]);
+        } catch (\RuntimeException $e) {
+            $this->sendResponse(['error' => $e->getMessage()], 403);
+        } catch (\Exception $e) {
+            $this->sendResponse(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Update client by client_id (VARCHAR)
+     */
+    public function update(string $clientId): void
     {
         $data = json_decode(file_get_contents('php://input'), true);
 
@@ -111,7 +96,7 @@ class ClientController
         }
 
         try {
-            $client = $this->clientService->update($id, $data);
+            $client = $this->service->update($clientId, $data);
             $this->sendResponse([
                 'success' => true,
                 'message' => 'Client updated successfully',
@@ -126,10 +111,13 @@ class ClientController
         }
     }
 
-    public function delete(int $id): void
+    /**
+     * Delete client by client_id (VARCHAR)
+     */
+    public function delete(string $clientId): void
     {
         try {
-            $this->clientService->delete($id);
+            $this->service->delete($clientId);
             $this->sendResponse([
                 'success' => true,
                 'message' => 'Client deleted successfully'
@@ -149,4 +137,3 @@ class ClientController
         exit;
     }
 }
-

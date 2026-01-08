@@ -6,30 +6,22 @@ namespace App\Controllers;
 
 use App\Services\EnquiryService;
 use App\Services\SecurityService;
-use App\Services\ClientService;
-use App\Repositories\SalesManagerRepository;
-use App\Repositories\SalesPersonRepository;
+use App\Services\PermissionService;
 
 class EnquiryController
 {
     private EnquiryService $enquiryService;
     private SecurityService $securityService;
-    private ClientService $clientService;
-    private SalesManagerRepository $salesManagerRepository;
-    private SalesPersonRepository $salesPersonRepository;
+    private PermissionService $permissionService;
 
     public function __construct(
         EnquiryService $enquiryService,
         SecurityService $securityService,
-        ClientService $clientService,
-        SalesManagerRepository $salesManagerRepository,
-        SalesPersonRepository $salesPersonRepository
+        PermissionService $permissionService
     ) {
         $this->enquiryService = $enquiryService;
         $this->securityService = $securityService;
-        $this->clientService = $clientService;
-        $this->salesManagerRepository = $salesManagerRepository;
-        $this->salesPersonRepository = $salesPersonRepository;
+        $this->permissionService = $permissionService;
     }
 
     public function create(): void
@@ -110,60 +102,51 @@ class EnquiryController
             $limit = max(1, min(1000, $limit));
             $offset = max(0, $offset);
 
-            // Get user role and IDs
-            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
-            $clientId = $_SERVER['AUTH_USER_CLIENT_ID'] ?? null;
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            $salesPersonId = $_SERVER['AUTH_USER_SALES_PERSON_ID'] ?? null;
-            
-            // Determine client domains based on role
+            // Get user ID from auth
+            $userId = $_SERVER['AUTH_USER_ID'] ?? null;
+            if (!$userId) {
+                $this->sendResponse(['error' => 'Unauthorized'], 401);
+                return;
+            }
+
+            // Check permission
+            if (!$this->permissionService->canAccess((int)$userId, 'enquiries', 'read')) {
+                $this->sendResponse(['error' => 'Permission denied'], 403);
+                return;
+            }
+
+            // Get accessible client IDs (includes hierarchy)
+            $clientIds = $this->permissionService->getAccessibleClientIds(
+                (int)$userId,
+                $this->enquiryService->getUserClientRepository()
+            );
+
+            // Convert client IDs to domains for filtering
             $clientDomains = null;
-            
-            if ($userRole === 'admin') {
-                // Admin sees all enquiries - no filtering
-                $clientDomains = null;
-            } elseif ($userRole === 'client' && $clientId !== null) {
-                // Client role: filter by their client's domains
-                try {
-                    $clientDomains = $this->clientService->getDomains($clientId);
-                } catch (\Exception $e) {
-                    $clientDomains = [];
-                }
-            } elseif ($userRole === 'sales_person' && $salesPersonId !== null) {
-                // Sales person: filter by their clients' domains
-                try {
-                    $clientIds = $this->salesPersonRepository->getClientIdsByPersonId($salesPersonId);
-                    if (!empty($clientIds)) {
-                        $clientDomains = $this->clientService->getDomainsByClientIds($clientIds);
-                    } else {
-                        $clientDomains = [];
-                    }
-                } catch (\Exception $e) {
-                    $clientDomains = [];
-                }
-            } elseif ($userRole === 'sales_manager' && $salesManagerId !== null) {
-                // Sales manager: filter by their clients' domains + all sales persons' clients under them
-                try {
-                    $clientIds = $this->salesManagerRepository->getClientIdsByManagerAndPersons($salesManagerId);
-                    if (!empty($clientIds)) {
-                        $clientDomains = $this->clientService->getDomainsByClientIds($clientIds);
-                    } else {
-                        $clientDomains = [];
-                    }
-                } catch (\Exception $e) {
-                    $clientDomains = [];
-                }
-            } else {
-                // No access - return empty
+            if ($clientIds !== null && !empty($clientIds)) {
+                $clientDomains = $this->enquiryService->getDomainsByClientIds($clientIds);
+            } elseif ($clientIds !== null && empty($clientIds)) {
+                // User has no clients - return empty
                 $clientDomains = [];
             }
 
             $enquiries = $this->enquiryService->getAll($limit, $offset, $clientDomains);
+            
+            // Add permission info to response
+            $canCreate = $this->permissionService->canAccess((int)$userId, 'enquiries', 'create');
+            $canUpdate = $this->permissionService->canAccess((int)$userId, 'enquiries', 'update');
+            $canDelete = $this->permissionService->canAccess((int)$userId, 'enquiries', 'delete');
+            
             $this->sendResponse([
                 'data' => $enquiries,
                 'count' => count($enquiries),
                 'limit' => $limit,
                 'offset' => $offset,
+                'permissions' => [
+                    'can_create' => $canCreate,
+                    'can_update' => $canUpdate,
+                    'can_delete' => $canDelete
+                ]
             ]);
         } catch (\Exception $e) {
             $this->sendResponse(['error' => $e->getMessage()], 500);

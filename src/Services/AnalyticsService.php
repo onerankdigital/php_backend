@@ -6,8 +6,8 @@ namespace App\Services;
 
 use App\Repositories\AnalyticsRepository;
 use App\Repositories\ClientRepository;
-use App\Repositories\SalesManagerRepository;
-use App\Repositories\SalesPersonRepository;
+use App\Repositories\UserClientRepository;
+use App\Services\PermissionService;
 use App\Utils\Crypto;
 use App\Utils\Tokenizer;
 
@@ -15,34 +15,34 @@ class AnalyticsService
 {
     private AnalyticsRepository $repository;
     private ClientRepository $clientRepository;
-    private SalesManagerRepository $salesManagerRepository;
-    private SalesPersonRepository $salesPersonRepository;
+    private UserClientRepository $userClientRepository;
+    private PermissionService $permissionService;
     private Crypto $crypto;
     private Tokenizer $tokenizer;
 
     public function __construct(
         AnalyticsRepository $repository,
         ClientRepository $clientRepository,
+        UserClientRepository $userClientRepository,
+        PermissionService $permissionService,
         Crypto $crypto,
-        Tokenizer $tokenizer,
-        ?SalesManagerRepository $salesManagerRepository = null,
-        ?SalesPersonRepository $salesPersonRepository = null
+        Tokenizer $tokenizer
     ) {
         $this->repository = $repository;
         $this->clientRepository = $clientRepository;
+        $this->userClientRepository = $userClientRepository;
+        $this->permissionService = $permissionService;
         $this->crypto = $crypto;
         $this->tokenizer = $tokenizer;
-        $this->salesManagerRepository = $salesManagerRepository;
-        $this->salesPersonRepository = $salesPersonRepository;
     }
 
     /**
-     * Get analytics data based on user role
+     * Get analytics data based on user ID and permissions
      */
-    public function getAnalytics(?string $userRole = null): array
+    public function getAnalytics(int $userId): array
     {
-        // Get client IDs and domain tokens based on role
-        $clientIds = $this->getClientIdsForRole($userRole);
+        // Get accessible client IDs using permission service (includes hierarchy)
+        $clientIds = $this->permissionService->getAccessibleClientIds($userId, $this->userClientRepository);
         $domainTokens = $this->getDomainTokensForClients($clientIds);
 
         // Get enquiry trends
@@ -55,10 +55,10 @@ class AnalyticsService
         $totalEnquiries = $this->repository->getTotalEnquiryCount($domainTokens);
         $totalClients = $this->repository->getClientCount($clientIds);
 
-        // Get package distribution (only for admin and sales roles)
+        // Get package distribution if user has permission
         $packageDistribution = null;
         $revenueEstimate = null;
-        if ($userRole === 'admin' || $userRole === 'sales_manager' || $userRole === 'sales_person') {
+        if ($this->permissionService->canAccess($userId, 'analytics', 'read_financial')) {
             $packageDistribution = $this->getPackageDistribution($clientIds);
             $revenueEstimate = $this->calculateRevenueEstimate($packageDistribution);
         }
@@ -79,35 +79,6 @@ class AnalyticsService
         ];
     }
 
-    private function getClientIdsForRole(?string $userRole): ?array
-    {
-        if ($userRole === 'admin' || $userRole === 'employee') {
-            return null; // All clients
-        }
-
-        if ($userRole === 'client') {
-            $clientId = $_SERVER['AUTH_USER_CLIENT_ID'] ?? null;
-            return $clientId ? [$clientId] : [];
-        }
-
-        if ($userRole === 'sales_person') {
-            $salesPersonId = $_SERVER['AUTH_USER_SALES_PERSON_ID'] ?? null;
-            if (!$salesPersonId || !$this->salesPersonRepository) {
-                return [];
-            }
-            return $this->salesPersonRepository->getClientIdsByPersonId($salesPersonId);
-        }
-
-        if ($userRole === 'sales_manager') {
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            if (!$salesManagerId || !$this->salesManagerRepository) {
-                return [];
-            }
-            return $this->salesManagerRepository->getClientIdsByManagerAndPersons($salesManagerId);
-        }
-
-        return [];
-    }
 
     private function getDomainTokensForClients(?array $clientIds): ?array
     {

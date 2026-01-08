@@ -5,37 +5,54 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Repositories\ClientRepository;
-use App\Repositories\SalesManagerRepository;
-use App\Repositories\SalesPersonRepository;
+use App\Repositories\UserClientRepository;
+use App\Repositories\ServiceRepository;
+use App\Repositories\UserRepository;
+use App\Services\EmailService;
 use App\Utils\Crypto;
 
 class ClientService
 {
     private ClientRepository $repository;
-    private SalesManagerRepository $salesManagerRepository;
-    private SalesPersonRepository $salesPersonRepository;
+    private UserClientRepository $userClientRepository;
+    private ServiceRepository $serviceRepository;
+    private UserRepository $userRepository;
     private Crypto $crypto;
+    private EmailService $emailService;
 
     public function __construct(
         ClientRepository $repository,
+        UserClientRepository $userClientRepository,
         Crypto $crypto,
-        ?SalesManagerRepository $salesManagerRepository = null,
-        ?SalesPersonRepository $salesPersonRepository = null
+        EmailService $emailService,
+        ServiceRepository $serviceRepository,
+        UserRepository $userRepository
     ) {
         $this->repository = $repository;
+        $this->userClientRepository = $userClientRepository;
         $this->crypto = $crypto;
-        $this->salesManagerRepository = $salesManagerRepository;
-        $this->salesPersonRepository = $salesPersonRepository;
+        $this->emailService = $emailService;
+        $this->serviceRepository = $serviceRepository;
+        $this->userRepository = $userRepository;
     }
 
-    public function create(array $data): array
+    /**
+     * Create a new client
+     * @return array The created client with decrypted data
+     */
+    public function create(array $data, ?int $createdByUserId = null): array
     {
-        // Validate required fields
-        $required = ['package', 'client_name', 'person_name', 'address', 'phone', 'email', 'domains'];
+        // Validate required fields (package is now optional, defaults to package description)
+        $required = ['client_name', 'person_name', 'address', 'phone', 'email', 'domains'];
         foreach ($required as $field) {
             if (empty($data[$field])) {
                 throw new \InvalidArgumentException("Field '$field' is required");
             }
+        }
+        
+        // Set default package description if not provided
+        if (empty($data['package'])) {
+            $data['package'] = 'Digital Marketing Package';
         }
 
         // Validate domains (must be JSON array)
@@ -44,454 +61,303 @@ class ClientService
             throw new \InvalidArgumentException('Domains must be a non-empty JSON array');
         }
 
-        // Encrypt sensitive fields (package, client_name, person_name, address, phone, email)
-        // city, state, pincode remain plaintext
-        $encrypted = [
+        // Encrypt sensitive fields
+        $encryptedData = [
             'package' => $this->crypto->encrypt($data['package']),
             'client_name' => $this->crypto->encrypt($data['client_name']),
             'person_name' => $this->crypto->encrypt($data['person_name']),
             'address' => $this->crypto->encrypt($data['address']),
             'phone' => $this->crypto->encrypt($data['phone']),
             'email' => $this->crypto->encrypt($data['email']),
-            'domains' => json_encode($domains), // Plaintext JSON
-            'city' => $data['city'] ?? null,
-            'state' => $data['state'] ?? null,
-            'pincode' => $data['pincode'] ?? null,
+            'domains' => json_encode($domains),
+            'city' => $data['city'] ?? null, // Not encrypted - for filtering/searching
+            'state' => $data['state'] ?? null, // Not encrypted - for filtering/searching
+            'pincode' => $data['pincode'] ?? null, // Not encrypted - for filtering/searching
+            'bidx_version' => $data['bidx_version'] ?? 'v1',
+            'total_amount' => $data['total_amount'] ?? 0.00,
+            
+            // New order form fields - encrypted sensitive data
+            'package' => $this->crypto->encrypt($data['package']), // Now set above with default
+            'designation' => isset($data['designation']) ? $this->crypto->encrypt($data['designation']) : null,
+            'gstin_no' => isset($data['gstin_no']) ? $this->crypto->encrypt($data['gstin_no']) : null,
+            'specific_guidelines' => isset($data['specific_guidelines']) ? $this->crypto->encrypt($data['specific_guidelines']) : null,
+            'package_amount' => $data['package_amount'] ?? 0.00,
+            'gst_amount' => $data['gst_amount'] ?? 0.00,
+            'total_amount' => $data['total_amount'] ?? 0.00, // package_amount + gst_amount
+            'payment_mode' => $data['payment_mode'] ?? null, // Not encrypted - generic payment type
+            'signature_name' => isset($data['signature_name']) ? $this->crypto->encrypt($data['signature_name']) : null,
+            'signature_designation' => isset($data['signature_designation']) ? $this->crypto->encrypt($data['signature_designation']) : null,
+            'signature_text' => isset($data['signature_text']) ? $this->crypto->encrypt($data['signature_text']) : null,
+            'esignature_data' => isset($data['esignature_data']) ? $this->crypto->encrypt($data['esignature_data']) : null,
+            'order_date' => $data['order_date'] ?? date('Y-m-d'),
+            
+            // SEO details - encrypted (business strategy)
+            'seo_keyword_range' => $data['seo_keyword_range'] ?? null, // Not encrypted - generic range
+            'seo_location' => $data['seo_location'] ?? null, // Not encrypted - generic location
+            'seo_keywords_list' => isset($data['seo_keywords_list']) ? $this->crypto->encrypt($data['seo_keywords_list']) : null,
+            
+            // Adwords details - encrypted (business strategy)
+            'adwords_keywords' => $data['adwords_keywords'] ?? null, // Not encrypted - just a count
+            'adwords_period' => $data['adwords_period'] ?? null, // Not encrypted - generic period
+            'adwords_location' => isset($data['adwords_location']) ? $this->crypto->encrypt($data['adwords_location']) : null,
+            'adwords_keywords_list' => isset($data['adwords_keywords_list']) ? $this->crypto->encrypt($data['adwords_keywords_list']) : null,
+            
+            'special_guidelines' => isset($data['special_guidelines']) ? $this->crypto->encrypt($data['special_guidelines']) : null,
         ];
 
-        $id = $this->repository->create($encrypted);
-
-        return $this->get($id);
-    }
-
-    public function get(int $id, ?string $userRole = null): array
-    {
-        $client = $this->repository->getById($id);
-        if (!$client) {
-            throw new \RuntimeException('Client not found');
-        }
-
-        // Check if user has access to this client (pass the client record for direct checking)
-        $this->checkClientAccess($id, $userRole, $client);
-
-        $decryptedClient = $this->decryptClient($client, $userRole);
+        $clientId = $this->repository->create($encryptedData); // Returns VARCHAR client_id
         
-        // For sales managers, add assignment information (same as in getAll)
-        if ($userRole === 'sales_manager') {
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            if ($salesManagerId && $this->salesManagerRepository) {
-                // Get all sales persons under this manager with their names
-                $salesPersons = $this->salesManagerRepository->getSalesPersonsByManagerId($salesManagerId);
-                $salesPersonIds = array_map(fn($sp) => (int)$sp['id'], $salesPersons);
-                
-                // Create a map of sales person ID to name for quick lookup
-                $salesPersonMap = [];
-                foreach ($salesPersons as $sp) {
-                    try {
-                        $salesPersonMap[(int)$sp['id']] = $this->crypto->decrypt($sp['name']);
-                    } catch (\Exception $e) {
-                        $salesPersonMap[(int)$sp['id']] = 'N/A';
+        // Automatically assign the creating user to this client
+        if ($createdByUserId) {
+            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? null;
+            
+            // Don't auto-assign if user is admin or employee (they manage all clients)
+            if ($userRole && $userRole !== 'admin' && $userRole !== 'employee') {
+                $this->userClientRepository->assignUserToClient($createdByUserId, $clientId);
+            }
+        }
+        
+        // Send email notifications (non-blocking, errors are logged but don't fail the request)
+        // Extract owner_emails from form data if provided
+        $ownerEmail = $data['owner_emails'] ?? null;
+        if (is_array($ownerEmail)) {
+            $ownerEmail = !empty($ownerEmail) ? $ownerEmail[0] : null;
+        }
+        if (is_string($ownerEmail)) {
+            $ownerEmail = trim($ownerEmail);
+            if (empty($ownerEmail) || !filter_var($ownerEmail, FILTER_VALIDATE_EMAIL)) {
+                $ownerEmail = null;
+            }
+        } else {
+            $ownerEmail = null;
+        }
+        
+        try {
+            // Fetch services and sub-services for this client
+            $services = $this->serviceRepository->getClientServices($clientId);
+            $subServices = $this->serviceRepository->getClientSubServices($clientId);
+            
+            // Get user email from users table if user ID is provided
+            $userEmail = null;
+            if ($createdByUserId) {
+                try {
+                    $user = $this->userRepository->findById($createdByUserId);
+                    if ($user && !empty($user['email'])) {
+                        // Decrypt user email
+                        $userEmail = $this->crypto->decrypt($user['email']);
                     }
+                } catch (\Exception $e) {
+                    error_log("Error fetching user email: " . $e->getMessage());
+                    // Fall back to client email if user email cannot be retrieved
+                    $userEmail = $data['email'] ?? null;
                 }
-                
-                // Determine if client is direct or from sales person
-                if (isset($decryptedClient['sales_manager_id']) && (int)$decryptedClient['sales_manager_id'] === $salesManagerId) {
-                    $decryptedClient['assignment_type'] = 'direct';
-                    $decryptedClient['assigned_to'] = 'Sales Manager';
-                    $decryptedClient['assigned_to_name'] = 'Direct Assignment';
-                } elseif (isset($decryptedClient['sales_person_id']) && in_array((int)$decryptedClient['sales_person_id'], $salesPersonIds)) {
-                    $decryptedClient['assignment_type'] = 'sales_person';
-                    $decryptedClient['assigned_to'] = 'Sales Person';
-                    $decryptedClient['sales_person_name'] = $salesPersonMap[(int)$decryptedClient['sales_person_id']] ?? 'N/A';
-                    $decryptedClient['assigned_to_name'] = $decryptedClient['sales_person_name'];
-                } else {
-                    // Fallback - shouldn't happen but just in case
-                    $decryptedClient['assignment_type'] = 'unknown';
-                    $decryptedClient['assigned_to'] = 'Unknown';
-                    $decryptedClient['assigned_to_name'] = 'N/A';
-                }
+            } else {
+                // If no user ID, use client email as fallback
+                $userEmail = $data['email'] ?? null;
             }
+            
+            $this->emailService->sendClientFormNotifications($data, $clientId, $ownerEmail, $services, $subServices, $userEmail);
+        } catch (\Exception $e) {
+            // Log error but don't fail client creation
+            error_log("Error sending client form email notifications: " . $e->getMessage());
         }
         
-        return $decryptedClient;
+        return $this->get($clientId);
     }
 
-    private function checkClientAccess(int $clientId, ?string $userRole, ?array $clientRecord = null): void
+    public function getAll(int $limit = 100, int $offset = 0, ?string $filter = null, ?int $userId = null): array
     {
-        if ($userRole === 'admin' || $userRole === 'employee') {
-            // Admin and employee have access to all clients
-            return;
-        }
+        $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
+        
+        // Determine which clients this user can access
+        $clientIds = $this->getClientIdsForUser($userId, $userRole);
 
-        // For sales managers, use the same method as getAll() to ensure 100% consistency
-        // This is the most reliable way - if it appears in getAll(), it will pass this check
-        if ($userRole === 'sales_manager') {
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            if (!$salesManagerId || !$this->salesManagerRepository) {
-                throw new \RuntimeException('Access denied to this client');
-            }
-            
-            // Get all accessible client IDs using the exact same method as getAll()
-            $allowedClientIds = $this->getClientIdsForRole($userRole, null, null);
-            
-            // Ensure clientId is an integer for comparison
-            $clientId = (int)$clientId;
-            
-            // Check if client ID is in the allowed list
-            if (empty($allowedClientIds)) {
-                throw new \RuntimeException('Access denied to this client');
-            }
-            
-            // Convert all IDs to integers for proper comparison
-            $allowedClientIds = array_map('intval', $allowedClientIds);
-            
-            if (!in_array($clientId, $allowedClientIds, true)) {
-                throw new \RuntimeException('Access denied to this client');
-            }
-            
-            return; // Access granted
-        }
-
-        // For other roles, use the standard method
-        $allowedClientIds = $this->getClientIdsForRole($userRole, null, null);
-        
-        if ($allowedClientIds === null) {
-            // null means all clients are allowed
-            return;
-        }
-        
-        // Ensure clientId is an integer for comparison
-        $clientId = (int)$clientId;
-        
-        // Check if client ID is in the allowed list
-        if (empty($allowedClientIds)) {
-            throw new \RuntimeException('Access denied to this client');
-        }
-        
-        // Convert all IDs to integers for proper comparison
-        $allowedClientIds = array_map('intval', $allowedClientIds);
-        
-        if (!in_array($clientId, $allowedClientIds, true)) {
-            throw new \RuntimeException('Access denied to this client');
-        }
-    }
-
-    public function getAll(int $limit = 100, int $offset = 0, ?string $userRole = null, ?string $filter = null, ?int $salesPersonId = null): array
-    {
-        // Get client IDs based on role and filter
-        $clientIds = $this->getClientIdsForRole($userRole, $filter, $salesPersonId);
-        
-        // Debug logging for sales managers
-        if ($userRole === 'sales_manager') {
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            error_log("ClientService::getAll - Sales Manager ID: " . ($salesManagerId ?? 'NULL'));
-            error_log("ClientService::getAll - Client IDs: " . (is_array($clientIds) ? (empty($clientIds) ? 'EMPTY ARRAY' : implode(', ', $clientIds)) : ($clientIds === null ? 'NULL (all clients)' : 'NOT ARRAY')));
-        }
-        
+        // Get clients
         $clients = $this->repository->getAll($limit, $offset, $clientIds);
         
-        // Debug logging
-        if ($userRole === 'sales_manager') {
-            error_log("ClientService::getAll - Clients returned from repository: " . count($clients));
-            if (count($clients) > 0) {
-                error_log("ClientService::getAll - First client ID: " . ($clients[0]['id'] ?? 'N/A'));
-            }
-        }
-        
-        $decryptedClients = array_map(function($client) use ($userRole) {
-            return $this->decryptClient($client, $userRole);
-        }, $clients);
-        
-        // For sales managers, add assignment information
-        if ($userRole === 'sales_manager') {
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            if ($salesManagerId && $this->salesManagerRepository) {
-                // Get all sales persons under this manager with their names
-                $salesPersons = $this->salesManagerRepository->getSalesPersonsByManagerId($salesManagerId);
-                $salesPersonIds = array_map(fn($sp) => (int)$sp['id'], $salesPersons);
-                
-                // Create a map of sales person ID to name for quick lookup
-                $salesPersonMap = [];
-                foreach ($salesPersons as $sp) {
-                    try {
-                        $salesPersonMap[(int)$sp['id']] = $this->crypto->decrypt($sp['name']);
-                    } catch (\Exception $e) {
-                        $salesPersonMap[(int)$sp['id']] = 'N/A';
-                    }
-                }
-                
-                // Add assignment information to each client
-                foreach ($decryptedClients as &$client) {
-                    // Determine if client is direct or from sales person
-                    if (isset($client['sales_manager_id']) && (int)$client['sales_manager_id'] === $salesManagerId) {
-                        $client['assignment_type'] = 'direct';
-                        $client['assigned_to'] = 'Sales Manager';
-                        $client['assigned_to_name'] = 'Direct Assignment';
-                    } elseif (isset($client['sales_person_id']) && in_array((int)$client['sales_person_id'], $salesPersonIds)) {
-                        $client['assignment_type'] = 'sales_person';
-                        $client['assigned_to'] = 'Sales Person';
-                        $client['sales_person_id'] = (int)$client['sales_person_id'];
-                        $client['sales_person_name'] = $salesPersonMap[(int)$client['sales_person_id']] ?? 'N/A';
-                        $client['assigned_to_name'] = $client['sales_person_name'];
-                    } else {
-                        // Fallback - shouldn't happen but just in case
-                        $client['assignment_type'] = 'unknown';
-                        $client['assigned_to'] = 'Unknown';
-                        $client['assigned_to_name'] = 'N/A';
-                    }
-                }
-                unset($client);
-            }
-        }
-        
-        // For admins, add assignment information (sales manager and sales person names)
-        if ($userRole === 'admin' && $this->salesManagerRepository && $this->salesPersonRepository) {
-            // Get all sales managers and create a map
-            $allSalesManagers = $this->salesManagerRepository->getAll();
-            $salesManagerMap = [];
-            foreach ($allSalesManagers as $sm) {
-                try {
-                    $salesManagerMap[(int)$sm['id']] = $this->crypto->decrypt($sm['name']);
-                } catch (\Exception $e) {
-                    $salesManagerMap[(int)$sm['id']] = 'N/A';
-                }
-            }
+        // Decrypt each client
+        $decryptedClients = [];
+        foreach ($clients as $client) {
+            $decryptedClient = $this->decryptClient($client);
             
-            // Get all sales persons and create a map
-            $allSalesPersons = [];
-            foreach ($allSalesManagers as $sm) {
-                $salesPersons = $this->salesManagerRepository->getSalesPersonsByManagerId((int)$sm['id']);
-                foreach ($salesPersons as $sp) {
-                    try {
-                        $allSalesPersons[(int)$sp['id']] = [
-                            'name' => $this->crypto->decrypt($sp['name']),
-                            'sales_manager_id' => (int)$sp['sales_manager_id'],
-                            'sales_manager_name' => $salesManagerMap[(int)$sp['sales_manager_id']] ?? 'N/A'
-                        ];
-                    } catch (\Exception $e) {
-                        $allSalesPersons[(int)$sp['id']] = [
-                            'name' => 'N/A',
-                            'sales_manager_id' => (int)$sp['sales_manager_id'],
-                            'sales_manager_name' => $salesManagerMap[(int)$sp['sales_manager_id']] ?? 'N/A'
-                        ];
-                    }
-                }
-            }
+            // Add assigned users info
+            $assignedUsers = $this->userClientRepository->getUsersByClientId($client['client_id']);
+            $decryptedClient['assigned_users'] = $assignedUsers;
+            $decryptedClient['assigned_users_count'] = count($assignedUsers);
             
-            // Add assignment information to each client
-            foreach ($decryptedClients as &$client) {
-                if (isset($client['sales_manager_id']) && $client['sales_manager_id'] !== null) {
-                    $client['assignment_type'] = 'sales_manager';
-                    $client['assigned_to'] = 'Sales Manager';
-                    $client['sales_manager_name'] = $salesManagerMap[(int)$client['sales_manager_id']] ?? 'N/A';
-                    $client['assigned_to_name'] = $client['sales_manager_name'];
-                } elseif (isset($client['sales_person_id']) && $client['sales_person_id'] !== null) {
-                    $client['assignment_type'] = 'sales_person';
-                    $client['assigned_to'] = 'Sales Person';
-                    if (isset($allSalesPersons[(int)$client['sales_person_id']])) {
-                        $client['sales_person_name'] = $allSalesPersons[(int)$client['sales_person_id']]['name'];
-                        $client['sales_manager_name'] = $allSalesPersons[(int)$client['sales_person_id']]['sales_manager_name'];
-                        $client['assigned_to_name'] = $client['sales_person_name'] . ' (under ' . $client['sales_manager_name'] . ')';
-                    } else {
-                        $client['sales_person_name'] = 'N/A';
-                        $client['assigned_to_name'] = 'N/A';
-                    }
-                } else {
-                    $client['assignment_type'] = 'unassigned';
-                    $client['assigned_to'] = 'Unassigned';
-                    $client['assigned_to_name'] = 'Not Assigned';
-                }
-            }
-            unset($client);
+            $decryptedClients[] = $decryptedClient;
         }
         
         return $decryptedClients;
     }
 
-    private function getClientIdsForRole(?string $userRole, ?string $filter = null, ?int $salesPersonId = null): ?array
+    /**
+     * Get client by client_id (VARCHAR)
+     */
+    public function get(string $clientId, ?string $userRole = null, ?int $userId = null): array
     {
-        if ($userRole === 'admin' || $userRole === 'employee') {
-            // Admin and employee see all clients
-            return null;
+        if ($userRole === null) {
+            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
         }
         
-        if ($userRole === 'client') {
-            // Client sees only their own client
-            $clientId = $_SERVER['AUTH_USER_CLIENT_ID'] ?? null;
-            return $clientId ? [$clientId] : [];
-        }
-        
-        if ($userRole === 'sales_person') {
-            // Sales person sees only their clients
-            $salesPersonId = $_SERVER['AUTH_USER_SALES_PERSON_ID'] ?? null;
-            if (!$salesPersonId || !$this->salesPersonRepository) {
-                return [];
-            }
-            
-            // Get client IDs assigned to this sales person
-            return $this->salesPersonRepository->getClientIdsByPersonId($salesPersonId);
-        }
-        
-        if ($userRole === 'sales_manager') {
-            // Sales manager sees their clients + sales persons' clients under them
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            
-            error_log("getClientIdsForRole - Sales Manager ID: " . ($salesManagerId ?? 'NULL'));
-            error_log("getClientIdsForRole - Sales Manager Repository: " . ($this->salesManagerRepository ? 'SET' : 'NULL'));
-            
-            if (!$salesManagerId || !$this->salesManagerRepository) {
-                error_log("getClientIdsForRole - Returning empty array (no manager ID or repository)");
-                return [];
-            }
-            
-            // Apply filter if specified
-            if ($filter === 'direct') {
-                // Only direct clients assigned to manager
-                $clientIds = $this->salesManagerRepository->getClientIdsByManagerId($salesManagerId);
-                error_log("getClientIdsForRole - Direct filter, client IDs: " . implode(', ', $clientIds));
-                return $clientIds;
-            } elseif ($filter === 'sales_person') {
-                // Only clients from sales persons
-                $salesPersons = $this->salesManagerRepository->getSalesPersonsByManagerId($salesManagerId);
-                $salesPersonIds = array_map(fn($sp) => (int)$sp['id'], $salesPersons);
-                
-                error_log("getClientIdsForRole - Sales person filter, sales person IDs: " . implode(', ', $salesPersonIds));
-                
-                if (empty($salesPersonIds)) {
-                    error_log("getClientIdsForRole - No sales persons found, returning empty array");
-                    return [];
-                }
-                
-                // If specific sales person ID is provided, filter by that
-                if ($salesPersonId !== null && in_array($salesPersonId, $salesPersonIds)) {
-                    $clientIds = $this->salesPersonRepository->getClientIdsByPersonId($salesPersonId);
-                    error_log("getClientIdsForRole - Specific sales person filter, client IDs: " . implode(', ', $clientIds));
-                    return $clientIds;
-                }
-                
-                // Get client IDs assigned to all sales persons
-                $clientIds = $this->salesPersonRepository->getClientIdsBySalesPersonIds($salesPersonIds);
-                error_log("getClientIdsForRole - All sales persons filter, client IDs: " . implode(', ', $clientIds));
-                return $clientIds;
-            } else {
-                // Get client IDs for manager and all sales persons under them (all)
-                $clientIds = $this->salesManagerRepository->getClientIdsByManagerAndPersons($salesManagerId);
-                error_log("getClientIdsForRole - All filter (manager + sales persons), client IDs: " . implode(', ', $clientIds));
-                return $clientIds;
-            }
-        }
-        
-        // Default: no access
-        return [];
-    }
-
-    public function update(int $id, array $data): array
-    {
-        $client = $this->repository->getById($id);
+        $client = $this->repository->getById($clientId);
         if (!$client) {
             throw new \RuntimeException('Client not found');
         }
 
-        $updateData = [];
+        // Check access
+        $this->checkClientAccess($clientId, $userRole, $userId);
 
-        // Encrypt fields that need encryption
-        $encryptedFields = ['package', 'client_name', 'person_name', 'address', 'phone', 'email'];
-        foreach ($encryptedFields as $field) {
-            if (isset($data[$field])) {
-                $updateData[$field] = $this->crypto->encrypt($data[$field]);
+        $decryptedClient = $this->decryptClient($client);
+        
+        // Add assigned users info
+        $assignedUsers = $this->userClientRepository->getUsersByClientId($clientId);
+        $decryptedClient['assigned_users'] = $assignedUsers;
+        $decryptedClient['assigned_users_count'] = count($assignedUsers);
+        
+        return $decryptedClient;
+    }
+
+    /**
+     * Update client by client_id (VARCHAR)
+     */
+    public function update(string $clientId, array $data): array
+    {
+        $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
+        $userId = $_SERVER['AUTH_USER_ID'] ?? null;
+        
+        // Check access
+        $this->checkClientAccess($clientId, $userRole, $userId);
+
+        $encryptedData = [];
+        
+        // Fields that need encryption
+        $encryptableFields = [
+            'package', 'client_name', 'person_name', 'address', 'phone', 'email', 
+            'designation', 'gstin_no', 
+            'specific_guidelines', 'signature_name', 'signature_designation', 'signature_text',
+            'esignature_data', 'seo_keywords_list', 'adwords_location', 'adwords_keywords_list',
+            'special_guidelines'
+        ];
+        
+        foreach ($encryptableFields as $field) {
+            if (isset($data[$field]) && $data[$field] !== null && $data[$field] !== '') {
+                $encryptedData[$field] = $this->crypto->encrypt($data[$field]);
             }
         }
 
-        // Handle domains (plaintext JSON)
+        // Fields that don't need encryption
+        $nonEncryptedFields = [
+            'total_amount', 'package_amount', 'gst_amount',
+            'payment_mode', 'order_date', 'seo_keyword_range',
+            'seo_location', 'adwords_keywords', 'adwords_period',
+            'city', 'state', 'pincode' // Location fields - not encrypted for filtering
+        ];
+        
+        foreach ($nonEncryptedFields as $field) {
+            if (isset($data[$field])) {
+                $encryptedData[$field] = $data[$field];
+            }
+        }
+
         if (isset($data['domains'])) {
             $domains = is_array($data['domains']) ? $data['domains'] : json_decode($data['domains'], true);
-            if (!is_array($domains)) {
-                throw new \InvalidArgumentException('Domains must be a JSON array');
+            if (is_array($domains)) {
+                $encryptedData['domains'] = json_encode($domains);
             }
-            $updateData['domains'] = json_encode($domains);
         }
 
-        // Plaintext fields
-        if (isset($data['city'])) {
-            $updateData['city'] = $data['city'];
-        }
-        if (isset($data['state'])) {
-            $updateData['state'] = $data['state'];
-        }
-        if (isset($data['pincode'])) {
-            $updateData['pincode'] = $data['pincode'];
-        }
-
-        $this->repository->update($id, $updateData);
-
-        // Get user role from server context if available
-        $userRole = $_SERVER['AUTH_USER_ROLE'] ?? null;
-        return $this->get($id, $userRole);
+        $this->repository->update($clientId, $encryptedData);
+        return $this->get($clientId);
     }
 
-    public function delete(int $id): void
+    /**
+     * Delete client by client_id (VARCHAR)
+     */
+    public function delete(string $clientId): bool
     {
-        $client = $this->repository->getById($id);
-        if (!$client) {
-            throw new \RuntimeException('Client not found');
-        }
-
-        $this->repository->delete($id);
-    }
-
-    public function getDomains(int $clientId): array
-    {
-        return $this->repository->getDomains($clientId);
-    }
-
-    public function getDomainsByClientIds(array $clientIds): array
-    {
-        return $this->repository->getDomainsByClientIds($clientIds);
-    }
-
-    public function getTotalCount(?string $userRole = null, ?string $filter = null, ?int $salesPersonId = null): int
-    {
-        $clientIds = $this->getClientIdsForRole($userRole, $filter, $salesPersonId);
+        $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
+        $userId = $_SERVER['AUTH_USER_ID'] ?? null;
         
-        if ($clientIds === null) {
-            // Count all clients
-            return $this->repository->count();
+        // Only admin can delete
+        if ($userRole !== 'admin') {
+            throw new \RuntimeException('Only administrators can delete clients');
         }
-        
-        if (empty($clientIds)) {
-            return 0;
-        }
-        
-        return $this->repository->countByIds($clientIds);
+
+        return $this->repository->delete($clientId);
     }
 
-    private function decryptClient(array $client, ?string $userRole = null): array
+    /**
+     * Get client IDs that a user has access to
+     */
+    private function getClientIdsForUser(?int $userId, string $userRole): ?array
     {
-        // Decrypt encrypted fields
-        $decrypted = [
-            'id' => (int)$client['id'],
-            'client_name' => $this->crypto->decrypt($client['client_name']),
-            'person_name' => $this->crypto->decrypt($client['person_name']),
-            'address' => $this->crypto->decrypt($client['address']),
-            'phone' => $this->crypto->decrypt($client['phone']),
-            'email' => $this->crypto->decrypt($client['email']),
-            'domains' => json_decode($client['domains'], true) ?: [],
-            'city' => $client['city'] ?? null,
-            'state' => $client['state'] ?? null,
-            'pincode' => $client['pincode'] ?? null,
-            'created_at' => $client['created_at'] ?? null,
-            'updated_at' => $client['updated_at'] ?? null,
-            'bidx_version' => $client['bidx_version'] ?? 'v1',
-            'sales_manager_id' => isset($client['sales_manager_id']) && $client['sales_manager_id'] !== null ? (int)$client['sales_manager_id'] : null,
-            'sales_person_id' => isset($client['sales_person_id']) && $client['sales_person_id'] !== null ? (int)$client['sales_person_id'] : null,
+        // Admin and employee see all clients
+        if ($userRole === 'admin' || $userRole === 'employee') {
+            return null; // null means all clients
+        }
+
+        // Other roles see only their assigned client(s)
+        if ($userId) {
+            $clientIds = $this->userClientRepository->getClientIdsByUserId($userId);
+            return empty($clientIds) ? [] : $clientIds;
+        }
+
+        return []; // No access
+    }
+
+    /**
+     * Check if user has access to a client
+     * @param string $clientId VARCHAR client_id
+     */
+    private function checkClientAccess(string $clientId, string $userRole, ?int $userId): void
+    {
+        // Admin and employee have access to all clients
+        if ($userRole === 'admin' || $userRole === 'employee') {
+            return;
+        }
+
+        // Get accessible client IDs for this user
+        $accessibleClientIds = $this->getClientIdsForUser($userId, $userRole);
+        
+        // If accessibleClientIds is null, user has access to all (shouldn't happen for non-admin)
+        if ($accessibleClientIds === null) {
+            return;
+        }
+
+        // Check if client ID is in accessible list
+        if (!in_array($clientId, $accessibleClientIds, true)) {
+            throw new \RuntimeException('Access denied to this client');
+        }
+    }
+
+    private function decryptClient(array $client): array
+    {
+        $decryptable = [
+            'package', 'client_name', 'person_name', 'address', 'phone', 'email', 
+            'designation', 'gstin_no',
+            'specific_guidelines', 'signature_name', 'signature_designation', 'signature_text',
+            'esignature_data', 'seo_keywords_list', 'adwords_location', 'adwords_keywords_list',
+            'special_guidelines'
         ];
-
-        // Hide package for employees
-        if ($userRole !== 'employee') {
-            $decrypted['package'] = $this->crypto->decrypt($client['package']);
+        // Note: city, state, pincode are NOT encrypted
+        
+        foreach ($decryptable as $field) {
+            if (isset($client[$field]) && !empty($client[$field])) {
+                try {
+                    $client[$field] = $this->crypto->decrypt($client[$field]);
+                } catch (\Exception $e) {
+                    $client[$field] = '[Decryption Error]';
+                }
+            }
         }
 
-        return $decrypted;
+        // Parse domains JSON
+        if (isset($client['domains'])) {
+            $domains = json_decode($client['domains'], true);
+            $client['domains'] = is_array($domains) ? $domains : [];
+        }
+
+        return $client;
     }
 }
-

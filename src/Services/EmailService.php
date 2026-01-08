@@ -913,6 +913,589 @@ Best regards,
             return false;
         }
     }
+
+    /**
+     * Send client form notification emails
+     * Sends three separate emails:
+     * 1. To owner email (from form's owner_emails field or client email)
+     * 2. To user who filled the form (from users table)
+     * 3. To admin (from config)
+     * 
+     * @param array $clientData Client form data
+     * @param string $clientId Client ID
+     * @param string|null $ownerEmail Owner email address (from form, optional)
+     * @param array $services Array of services assigned to client (optional)
+     * @param array $subServices Array of sub-services assigned to client (optional)
+     * @param string|null $userEmail User email from users table (optional)
+     * @return bool Success status
+     */
+    public function sendClientFormNotifications(array $clientData, string $clientId, ?string $ownerEmail = null, array $services = [], array $subServices = [], ?string $userEmail = null): bool
+    {
+        if (!$this->phpmailerAvailable) {
+            error_log("PHPMailer not available. Client form emails not sent.");
+            return false;
+        }
+
+        $success = false;
+        $clientEmail = $clientData['email'] ?? null;
+        
+        // Determine owner email: use provided owner email or fall back to client email
+        $recipientEmail = !empty($ownerEmail) ? $ownerEmail : $clientEmail;
+        
+        // Email 1: Send to owner email (from form or client email) - this is the client's email
+        if (!empty($recipientEmail) && filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+            $ownerSuccess = $this->sendClientFormEmailToRecipient(
+                $recipientEmail,
+                $clientData,
+                $clientId,
+                'owner',
+                $services,
+                $subServices
+            );
+            $success = $success || $ownerSuccess;
+        }
+        
+        // Email 2: Send to user who filled the form (from users table)
+        // Use userEmail from users table if provided, otherwise fall back to client email
+        $userRecipientEmail = !empty($userEmail) ? $userEmail : $clientEmail;
+        if (!empty($userRecipientEmail) && filter_var($userRecipientEmail, FILTER_VALIDATE_EMAIL) && $userRecipientEmail !== $recipientEmail) {
+            $userSuccess = $this->sendClientFormEmailToRecipient(
+                $userRecipientEmail,
+                $clientData,
+                $clientId,
+                'user',
+                $services,
+                $subServices
+            );
+            $success = $success || $userSuccess;
+        }
+        
+        // Email 3: Always send to admin (from config)
+        if ($this->adminEmail) {
+            $adminSuccess = $this->sendClientFormEmailToRecipient(
+                $this->adminEmail,
+                $clientData,
+                $clientId,
+                'admin',
+                $services,
+                $subServices
+            );
+            $success = $success || $adminSuccess;
+        }
+        
+        if (!$success) {
+            error_log("No valid recipient emails configured. Client form emails not sent.");
+        }
+        
+        return $success;
+    }
+    
+    /**
+     * Send client form email to a specific recipient
+     * 
+     * @param string $recipientEmail Recipient email address
+     * @param array $clientData Client form data
+     * @param string $clientId Client ID
+     * @param string $recipientType Type of recipient ('owner', 'user', or 'admin')
+     * @param array $services Array of services assigned to client
+     * @param array $subServices Array of sub-services assigned to client
+     * @return bool Success status
+     */
+    private function sendClientFormEmailToRecipient(
+        string $recipientEmail,
+        array $clientData,
+        string $clientId,
+        string $recipientType = 'owner',
+        array $services = [],
+        array $subServices = []
+    ): bool {
+        if (empty($recipientEmail) || !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+            return false;
+        }
+
+        try {
+            $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
+            $mail->isSMTP();
+            $mail->Host = $this->smtpHost;
+            $mail->SMTPAuth = true;
+            $mail->Username = $this->smtpUser;
+            $mail->Password = $this->smtpPass;
+            $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+            $mail->Port = $this->smtpPort;
+            $mail->CharSet = 'UTF-8';
+            $mail->isHTML(true);
+
+            $mail->setFrom($this->smtpFromEmail, $this->smtpFromName);
+            $mail->addAddress($recipientEmail);
+            
+            // Set subject based on recipient type
+            if ($recipientType === 'admin') {
+                $mail->Subject = 'New Client Form Submission - ' . ($clientData['client_name'] ?? 'Client');
+            } else {
+                $mail->Subject = 'Client Form Submission Confirmation';
+            }
+
+            // Build email body
+            $mail->Body = $this->buildClientFormEmailHtml($clientData, $clientId, $recipientType, $services, $subServices);
+            $mail->AltBody = $this->buildClientFormEmailText($clientData, $clientId, $recipientType, $services, $subServices);
+            
+            $mail->send();
+            return true;
+        } catch (\Exception $e) {
+            $errorInfo = isset($mail) ? $mail->ErrorInfo : $e->getMessage();
+            error_log("Error sending client form email to {$recipientType} ({$recipientEmail}): " . $errorInfo);
+            return false;
+        }
+    }
+
+    /**
+     * Format client field value for HTML display
+     */
+    private function formatClientField($value, bool $isHtml = true, bool $isMultiline = false): string
+    {
+        $trimmed = trim((string)($value ?? ''));
+        if (empty($trimmed)) {
+            return '<span style="color: #999999; font-style: italic;">N/A</span>';
+        }
+        if ($isHtml) {
+            $escaped = htmlspecialchars($trimmed, ENT_QUOTES, 'UTF-8');
+            return $isMultiline ? nl2br($escaped) : $escaped;
+        }
+        return $trimmed;
+    }
+
+    /**
+     * Build HTML email template for client form notification with ALL fields
+     */
+    private function buildClientFormEmailHtml(array $clientData, string $clientId, string $recipientType, array $services = [], array $subServices = []): string
+    {
+        // Format all client fields
+        $fields = [
+            'client_id' => htmlspecialchars($clientId, ENT_QUOTES, 'UTF-8'),
+            'order_date' => $this->formatClientField($clientData['order_date'] ?? date('Y-m-d')),
+            'client_name' => $this->formatClientField($clientData['client_name'] ?? ''),
+            'person_name' => $this->formatClientField($clientData['person_name'] ?? ''),
+            'designation' => $this->formatClientField($clientData['designation'] ?? ''),
+            'email' => !empty($clientData['email']) ? '<a href="mailto:' . htmlspecialchars($clientData['email'], ENT_QUOTES, 'UTF-8') . '" style="color: #667eea; text-decoration: none;">' . htmlspecialchars($clientData['email'], ENT_QUOTES, 'UTF-8') . '</a>' : '<span style="color: #999999; font-style: italic;">N/A</span>',
+            'phone' => !empty($clientData['phone']) ? '<a href="tel:' . htmlspecialchars($clientData['phone'], ENT_QUOTES, 'UTF-8') . '" style="color: #667eea; text-decoration: none;">' . htmlspecialchars($clientData['phone'], ENT_QUOTES, 'UTF-8') . '</a>' : '<span style="color: #999999; font-style: italic;">N/A</span>',
+            'address' => $this->formatClientField($clientData['address'] ?? '', true, true),
+            'domains' => $this->formatClientField(is_array($clientData['domains'] ?? null) ? implode(', ', $clientData['domains']) : ($clientData['domains'] ?? '')),
+            'gstin_no' => $this->formatClientField($clientData['gstin_no'] ?? ''),
+            'city' => $this->formatClientField($clientData['city'] ?? ''),
+            'state' => $this->formatClientField($clientData['state'] ?? ''),
+            'pincode' => $this->formatClientField($clientData['pincode'] ?? ''),
+            'package' => $this->formatClientField($clientData['package'] ?? ''),
+            'package_amount' => isset($clientData['package_amount']) ? '₹' . number_format((float)$clientData['package_amount'], 2) : '<span style="color: #999999; font-style: italic;">N/A</span>',
+            'gst_amount' => isset($clientData['gst_amount']) ? '₹' . number_format((float)$clientData['gst_amount'], 2) : '<span style="color: #999999; font-style: italic;">N/A</span>',
+            'total_amount' => isset($clientData['total_amount']) ? '₹' . number_format((float)$clientData['total_amount'], 2) : '<span style="color: #999999; font-style: italic;">N/A</span>',
+            'payment_mode' => $this->formatClientField($clientData['payment_mode'] ?? ''),
+            'specific_guidelines' => $this->formatClientField($clientData['specific_guidelines'] ?? '', true, true),
+            'seo_keyword_range' => $this->formatClientField($clientData['seo_keyword_range'] ?? ''),
+            'seo_location' => $this->formatClientField($clientData['seo_location'] ?? ''),
+            'seo_keywords_list' => $this->formatClientField($clientData['seo_keywords_list'] ?? '', true, true),
+            'adwords_keywords' => $this->formatClientField($clientData['adwords_keywords'] ?? ''),
+            'adwords_period' => $this->formatClientField($clientData['adwords_period'] ?? ''),
+            'adwords_location' => $this->formatClientField($clientData['adwords_location'] ?? ''),
+            'adwords_keywords_list' => $this->formatClientField($clientData['adwords_keywords_list'] ?? '', true, true),
+            'special_guidelines' => $this->formatClientField($clientData['special_guidelines'] ?? '', true, true),
+            'signature_name' => $this->formatClientField($clientData['signature_name'] ?? ''),
+            'signature_designation' => $this->formatClientField($clientData['signature_designation'] ?? ''),
+            'signature_text' => $this->formatClientField($clientData['signature_text'] ?? ''),
+        ];
+        
+        // Build services HTML
+        $servicesHtml = '';
+        if (!empty($services)) {
+            $servicesList = '';
+            foreach ($services as $service) {
+                $serviceName = htmlspecialchars($service['service_name'] ?? 'N/A', ENT_QUOTES, 'UTF-8');
+                $servicesList .= '<li style="margin-bottom: 8px;">' . $serviceName . '</li>';
+            }
+            $servicesHtml = '<ul style="margin: 0; padding-left: 20px; color: #333333;">' . $servicesList . '</ul>';
+        } else {
+            $servicesHtml = '<span style="color: #999999; font-style: italic;">No services selected</span>';
+        }
+        
+        // Build sub-services HTML
+        $subServicesHtml = '';
+        if (!empty($subServices)) {
+            $subServicesList = '';
+            foreach ($subServices as $subService) {
+                $subServiceName = htmlspecialchars($subService['sub_service_name'] ?? 'N/A', ENT_QUOTES, 'UTF-8');
+                $quantity = isset($subService['quantity']) && $subService['quantity'] > 0 ? ' (Qty: ' . $subService['quantity'] . ')' : '';
+                $subServicesList .= '<li style="margin-bottom: 8px;">' . $subServiceName . $quantity . '</li>';
+            }
+            $subServicesHtml = '<ul style="margin: 0; padding-left: 20px; color: #333333;">' . $subServicesList . '</ul>';
+        } else {
+            $subServicesHtml = '<span style="color: #999999; font-style: italic;">No sub-services selected</span>';
+        }
+        
+        $greeting = $recipientType === 'admin' ? 'New Client Form Submission' : 'Thank you for your submission!';
+        $message = $recipientType === 'admin' 
+            ? 'A new client form has been submitted. Please review the details below.'
+            : 'We have received your client form submission. Our team will review it and get back to you soon.';
+        
+        return '
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client Form Submission</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f4f4f4;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f4; padding: 20px 0;">
+        <tr>
+            <td align="center">
+                <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <!-- Header -->
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px 40px; text-align: center; border-radius: 8px 8px 0 0;">
+                            <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: bold; letter-spacing: 1px;">ONE RANK DIGITAL</h1>
+                            <p style="margin: 10px 0 0 0; color: #ffffff; font-size: 14px; opacity: 0.9;">Client Form Notification</p>
+                        </td>
+                    </tr>
+                    
+                    <!-- Content -->
+                    <tr>
+                        <td style="padding: 40px;">
+                            <h2 style="margin: 0 0 20px 0; color: #333333; font-size: 22px; border-bottom: 2px solid #667eea; padding-bottom: 10px;">' . $greeting . '</h2>
+                            
+                            <p style="margin: 0 0 30px 0; color: #333333; font-size: 16px; line-height: 1.6;">' . $message . '</p>
+                            
+                            <!-- Order Details Table -->
+                            <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <th colspan="2" style="text-align: left; padding: 15px; color: #667eea; font-size: 16px; border-bottom: 2px solid #667eea;">Order Details</th>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; width: 35%; font-weight: bold; color: #555555; background-color: #f8f9fa;">Client ID:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['client_id'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Order Date:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['order_date'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Package:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['package'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Package Amount:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['package_amount'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">GST Amount (18%):</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['gst_amount'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa;">Total Amount:</td>
+                                    <td style="padding: 12px; color: #333333; font-weight: bold; color: #667eea;">' . $fields['total_amount'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa;">Payment Mode:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $fields['payment_mode'] . '</td>
+                                </tr>
+                            </table>
+                            
+                            <!-- Client Information Table -->
+                            <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <th colspan="2" style="text-align: left; padding: 15px; color: #667eea; font-size: 16px; border-bottom: 2px solid #667eea;">Client Information</th>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; width: 35%; font-weight: bold; color: #555555; background-color: #f8f9fa;">Company Name:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['client_name'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Contact Person:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['person_name'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Designation:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['designation'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Email:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['email'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Phone:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['phone'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa; vertical-align: top;">Address:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['address'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">City:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['city'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">State:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['state'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Pincode:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['pincode'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Domain(s):</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['domains'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa;">GSTIN No:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $fields['gstin_no'] . '</td>
+                                </tr>
+                            </table>
+                            
+                            <!-- Services Table -->
+                            <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <th colspan="2" style="text-align: left; padding: 15px; color: #667eea; font-size: 16px; border-bottom: 2px solid #667eea;">Selected Services</th>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa; vertical-align: top; width: 35%;">Services:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $servicesHtml . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa; vertical-align: top;">Sub-Services:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $subServicesHtml . '</td>
+                                </tr>
+                            </table>
+                            
+                            <!-- Guidelines Table -->
+                            <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <th colspan="2" style="text-align: left; padding: 15px; color: #667eea; font-size: 16px; border-bottom: 2px solid #667eea;">Guidelines & Requirements</th>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa; vertical-align: top; width: 35%;">Specific Guidelines:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['specific_guidelines'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa; vertical-align: top;">Special Guidelines:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $fields['special_guidelines'] . '</td>
+                                </tr>
+                            </table>
+                            
+                            <!-- SEO Details Table -->
+                            <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <th colspan="2" style="text-align: left; padding: 15px; color: #667eea; font-size: 16px; border-bottom: 2px solid #667eea;">SEO Details</th>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa; width: 35%;">Keyword Range:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['seo_keyword_range'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Location:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['seo_location'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa; vertical-align: top;">Keywords List:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $fields['seo_keywords_list'] . '</td>
+                                </tr>
+                            </table>
+                            
+                            <!-- Google Adwords Table -->
+                            <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <th colspan="2" style="text-align: left; padding: 15px; color: #667eea; font-size: 16px; border-bottom: 2px solid #667eea;">Google Adwords Details</th>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa; width: 35%;">Number of Keywords:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['adwords_keywords'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Period:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['adwords_period'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Location:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['adwords_location'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa; vertical-align: top;">Keywords List:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $fields['adwords_keywords_list'] . '</td>
+                                </tr>
+                            </table>
+                            
+                            <!-- Signature Table -->
+                            <table width="100%" cellpadding="12" cellspacing="0" style="border-collapse: collapse; margin-bottom: 30px; border: 1px solid #e0e0e0; border-radius: 6px;">
+                                <tr style="background-color: #f8f9fa;">
+                                    <th colspan="2" style="text-align: left; padding: 15px; color: #667eea; font-size: 16px; border-bottom: 2px solid #667eea;">Signature Information</th>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa; width: 35%;">Name & Designation:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['signature_name'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; font-weight: bold; color: #555555; background-color: #f8f9fa;">Designation:</td>
+                                    <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; color: #333333;">' . $fields['signature_designation'] . '</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 12px; font-weight: bold; color: #555555; background-color: #f8f9fa;">Typed Signature:</td>
+                                    <td style="padding: 12px; color: #333333;">' . $fields['signature_text'] . '</td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color: #f8f9fa; padding: 20px 40px; text-align: center; border-radius: 0 0 8px 8px; border-top: 1px solid #e0e0e0;">
+                            <p style="margin: 0; color: #666666; font-size: 12px;">
+                                This is an automated notification from <strong style="color: #667eea;">One Rank Digital</strong> Client Form System
+                            </p>
+                            <p style="margin: 10px 0 0 0; color: #999999; font-size: 11px;">
+                                © ' . date('Y') . ' One Rank Digital. All rights reserved.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>';
+    }
+
+    /**
+     * Build plain text version for client form email with ALL fields
+     */
+    private function buildClientFormEmailText(array $clientData, string $clientId, string $recipientType, array $services = [], array $subServices = []): string
+    {
+        $formatField = function($value) {
+            $trimmed = trim((string)($value ?? ''));
+            return !empty($trimmed) ? $trimmed : 'N/A';
+        };
+        
+        $formatAmount = function($value) {
+            return isset($value) ? '₹' . number_format((float)$value, 2) : 'N/A';
+        };
+        
+        $formatArray = function($value) {
+            if (is_array($value)) {
+                return implode(', ', $value);
+            }
+            return $value ?? 'N/A';
+        };
+        
+        // Build services list
+        $servicesList = 'N/A';
+        if (!empty($services)) {
+            $serviceNames = array_map(function($s) { return $s['service_name'] ?? 'N/A'; }, $services);
+            $servicesList = implode(', ', $serviceNames);
+        }
+        
+        // Build sub-services list
+        $subServicesList = 'N/A';
+        if (!empty($subServices)) {
+            $subServiceNames = [];
+            foreach ($subServices as $ss) {
+                $name = $ss['sub_service_name'] ?? 'N/A';
+                $qty = isset($ss['quantity']) && $ss['quantity'] > 0 ? ' (Qty: ' . $ss['quantity'] . ')' : '';
+                $subServiceNames[] = $name . $qty;
+            }
+            $subServicesList = implode(', ', $subServiceNames);
+        }
+        
+        $greeting = $recipientType === 'admin' ? 'New Client Form Submission' : 'Thank you for your submission!';
+        $message = $recipientType === 'admin' 
+            ? 'A new client form has been submitted. Please review the details below.'
+            : 'We have received your client form submission. Our team will review it and get back to you soon.';
+        
+        return "
+ONE RANK DIGITAL - {$greeting}
+
+{$message}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ORDER DETAILS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Client ID: {$clientId}
+Order Date: " . $formatField($clientData['order_date'] ?? date('Y-m-d')) . "
+Package: " . $formatField($clientData['package'] ?? '') . "
+Package Amount: " . $formatAmount($clientData['package_amount'] ?? null) . "
+GST Amount (18%): " . $formatAmount($clientData['gst_amount'] ?? null) . "
+Total Amount: " . $formatAmount($clientData['total_amount'] ?? null) . "
+Payment Mode: " . $formatField($clientData['payment_mode'] ?? '') . "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CLIENT INFORMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Company Name: " . $formatField($clientData['client_name'] ?? '') . "
+Contact Person: " . $formatField($clientData['person_name'] ?? '') . "
+Designation: " . $formatField($clientData['designation'] ?? '') . "
+Email: " . $formatField($clientData['email'] ?? '') . "
+Phone: " . $formatField($clientData['phone'] ?? '') . "
+Address: " . $formatField($clientData['address'] ?? '') . "
+City: " . $formatField($clientData['city'] ?? '') . "
+State: " . $formatField($clientData['state'] ?? '') . "
+Pincode: " . $formatField($clientData['pincode'] ?? '') . "
+Domain(s): " . $formatArray($clientData['domains'] ?? null) . "
+GSTIN No: " . $formatField($clientData['gstin_no'] ?? '') . "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SERVICES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Services: {$servicesList}
+
+Sub-Services: {$subServicesList}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GUIDELINES & REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Specific Guidelines:
+" . $formatField($clientData['specific_guidelines'] ?? '') . "
+
+Special Guidelines:
+" . $formatField($clientData['special_guidelines'] ?? '') . "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SEO DETAILS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Keyword Range: " . $formatField($clientData['seo_keyword_range'] ?? '') . "
+Location: " . $formatField($clientData['seo_location'] ?? '') . "
+Keywords List:
+" . $formatField($clientData['seo_keywords_list'] ?? '') . "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GOOGLE ADWORDS DETAILS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Number of Keywords: " . $formatField($clientData['adwords_keywords'] ?? '') . "
+Period: " . $formatField($clientData['adwords_period'] ?? '') . "
+Location: " . $formatField($clientData['adwords_location'] ?? '') . "
+Keywords List:
+" . $formatField($clientData['adwords_keywords_list'] ?? '') . "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SIGNATURE INFORMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Name & Designation: " . $formatField($clientData['signature_name'] ?? '') . "
+Designation: " . $formatField($clientData['signature_designation'] ?? '') . "
+Typed Signature: " . $formatField($clientData['signature_text'] ?? '') . "
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+© " . date('Y') . " One Rank Digital. All rights reserved.
+        ";
+    }
 }
 
     

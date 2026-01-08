@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Repositories\UserRepository;
+use App\Repositories\RoleRepository;
 use App\Services\JwtService;
 use App\Services\EmailService;
 use App\Utils\Crypto;
@@ -13,6 +14,7 @@ use App\Utils\Tokenizer;
 class AuthService
 {
     private UserRepository $userRepository;
+    private RoleRepository $roleRepository;
     private JwtService $jwtService;
     private EmailService $emailService;
     private Crypto $crypto;
@@ -23,13 +25,15 @@ class AuthService
         JwtService $jwtService,
         EmailService $emailService,
         Crypto $crypto,
-        Tokenizer $tokenizer
+        Tokenizer $tokenizer,
+        ?RoleRepository $roleRepository = null
     ) {
         $this->userRepository = $userRepository;
         $this->jwtService = $jwtService;
         $this->emailService = $emailService;
         $this->crypto = $crypto;
         $this->tokenizer = $tokenizer;
+        $this->roleRepository = $roleRepository;
     }
 
     public function register(string $email, string $password): array
@@ -70,7 +74,7 @@ class AuthService
         $passwordHash = password_hash($password, PASSWORD_BCRYPT);
 
         // Create user (role defaults to 'client', is_approved defaults to 0)
-        $userId = $this->userRepository->create($encryptedEmail, $passwordHash, 'client');
+        $userId = $this->userRepository->create($encryptedEmail, $passwordHash);
 
         // Store email search tokens
         $this->userRepository->storeEmailTokens($userId, $emailTokenHashes);
@@ -146,11 +150,10 @@ class AuthService
         }
         error_log('AuthService::login - Password verified');
 
-        // Check if user is approved (admin, sales_manager, sales_person, and employee are always approved)
+        // Check if user is approved
         $isApproved = (int)($user['is_approved'] ?? 0);
-        $role = $user['role'] ?? 'client';
         
-        if ($role === 'client' && !$isApproved) {
+        if (!$isApproved) {
             error_log('AuthService::login - User not approved');
             throw new \RuntimeException('Your account is pending approval. Please wait for admin approval.');
         }
@@ -160,15 +163,23 @@ class AuthService
         $token = $this->jwtService->generateToken((int)$user['id'], $decryptedEmail);
         error_log('AuthService::login - JWT token generated');
 
+        // Get permissions for the user's role
+        $permissions = [];
+        if ($this->roleRepository && isset($user['role_id']) && $user['role_id']) {
+            try {
+                $permissions = $this->roleRepository->getPermissions((int)$user['role_id']);
+            } catch (\Exception $e) {
+                error_log('Error getting permissions: ' . $e->getMessage());
+            }
+        }
+
         $result = [
             'user' => [
                 'id' => (int)$user['id'],
                 'email' => $decryptedEmail, // Return decrypted email
                 'role' => $role,
-                'client_id' => isset($user['client_id']) ? (int)$user['client_id'] : null,
-                'sales_manager_id' => isset($user['sales_manager_id']) ? (int)$user['sales_manager_id'] : null,
-                'sales_person_id' => isset($user['sales_person_id']) ? (int)$user['sales_person_id'] : null,
-                'employee_id' => isset($user['employee_id']) ? (int)$user['employee_id'] : null
+                'role_id' => isset($user['role_id']) ? (int)$user['role_id'] : null,
+                'permissions' => $permissions
             ],
             'token' => $token
         ];
@@ -272,20 +283,18 @@ class AuthService
             return null;
         }
 
-        // Include role and client_id in user data
-        $user['role'] = $user['role'] ?? 'client';
+        // Include role info in user data
+        $user['role'] = $user['role_name'] ?? $user['role'] ?? 'client';
+        $user['role_id'] = isset($user['role_id']) ? (int)$user['role_id'] : null;
         $user['client_id'] = isset($user['client_id']) ? (int)$user['client_id'] : null;
-        $user['sales_manager_id'] = isset($user['sales_manager_id']) ? (int)$user['sales_manager_id'] : null;
-        $user['sales_person_id'] = isset($user['sales_person_id']) ? (int)$user['sales_person_id'] : null;
-        $user['employee_id'] = isset($user['employee_id']) ? (int)$user['employee_id'] : null;
         $user['is_approved'] = (int)($user['is_approved'] ?? 0);
 
         return $user;
     }
 
-    public function approveUser(int $userId, int $approvedBy, ?string $role = null, ?int $clientId = null, ?int $salesManagerId = null, ?int $salesPersonId = null, ?int $employeeId = null): bool
+    public function approveUser(int $userId, int $approvedBy, ?int $roleId = null, ?int $clientId = null): bool
     {
-        return $this->userRepository->approveUser($userId, $approvedBy, $role, $clientId, $salesManagerId, $salesPersonId, $employeeId);
+        return $this->userRepository->approveUser($userId, $approvedBy, $roleId, $clientId);
     }
 
     public function assignClientToUser(int $userId, int $clientId): bool
@@ -304,6 +313,23 @@ class AuthService
             } catch (\Exception $e) {
                 $user['email'] = '[Encryption Error]';
             }
+            return $user;
+        }, $users);
+    }
+
+    public function getAllUsers(): array
+    {
+        $users = $this->userRepository->getAllUsers();
+        
+        // Decrypt emails and remove sensitive data
+        return array_map(function($user) {
+            try {
+                $user['email'] = $this->crypto->decrypt($user['email']);
+            } catch (\Exception $e) {
+                $user['email'] = '[Encryption Error]';
+            }
+            // Remove password hash from response
+            unset($user['password_hash']);
             return $user;
         }, $users);
     }

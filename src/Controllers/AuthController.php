@@ -223,10 +223,8 @@ class AuthController
                 'id' => (int)$user['id'],
                 'email' => $user['email'],
                 'role' => $user['role'] ?? 'client',
+                'role_id' => isset($user['role_id']) ? (int)$user['role_id'] : null,
                 'client_id' => isset($user['client_id']) ? (int)$user['client_id'] : null,
-                'sales_manager_id' => isset($user['sales_manager_id']) ? (int)$user['sales_manager_id'] : null,
-                'sales_person_id' => isset($user['sales_person_id']) ? (int)$user['sales_person_id'] : null,
-                'employee_id' => isset($user['employee_id']) ? (int)$user['employee_id'] : null,
                 'is_approved' => (int)($user['is_approved'] ?? 0)
             ]
         ]);
@@ -242,14 +240,16 @@ class AuthController
         }
 
         $userId = isset($data['user_id']) ? (int)$data['user_id'] : 0;
-        $role = isset($data['role']) ? $data['role'] : null;
+        $roleId = isset($data['role_id']) ? (int)$data['role_id'] : null;
         $clientId = isset($data['client_id']) ? (int)$data['client_id'] : null;
-        $salesManagerId = isset($data['sales_manager_id']) ? (int)$data['sales_manager_id'] : null;
-        $salesPersonId = isset($data['sales_person_id']) ? (int)$data['sales_person_id'] : null;
-        $employeeId = isset($data['employee_id']) ? (int)$data['employee_id'] : null;
 
         if ($userId <= 0) {
             $this->sendResponse(['error' => 'Valid user_id is required'], 400);
+            return;
+        }
+
+        if ($roleId === null || $roleId <= 0) {
+            $this->sendResponse(['error' => 'Valid role_id is required'], 400);
             return;
         }
 
@@ -260,7 +260,7 @@ class AuthController
         }
 
         try {
-            $this->authService->approveUser($userId, $approvedBy, $role, $clientId, $salesManagerId, $salesPersonId, $employeeId);
+            $this->authService->approveUser($userId, $approvedBy, $roleId, $clientId);
             $this->sendResponse([
                 'success' => true,
                 'message' => 'User approved successfully'
@@ -274,6 +274,20 @@ class AuthController
     {
         try {
             $users = $this->authService->getPendingUsers();
+            $this->sendResponse([
+                'success' => true,
+                'data' => $users,
+                'count' => count($users)
+            ]);
+        } catch (\Exception $e) {
+            $this->sendResponse(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    public function getAllUsers(): void
+    {
+        try {
+            $users = $this->authService->getAllUsers();
             $this->sendResponse([
                 'success' => true,
                 'data' => $users,

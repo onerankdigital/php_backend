@@ -9,11 +9,11 @@ use App\Controllers\KeyRotationController;
 use App\Controllers\SecurityController;
 use App\Controllers\AuthController;
 use App\Controllers\ClientController;
-use App\Controllers\SalesPersonController;
-use App\Controllers\SalesManagerController;
 use App\Controllers\AnalyticsController;
 use App\Controllers\FileUploadController;
 use App\Controllers\FormConfigController;
+use App\Controllers\RoleController;
+use App\Controllers\ServiceController;
 use App\Services\JwtService;
 use App\Services\AuthService;
 
@@ -24,11 +24,12 @@ class Routes
     private KeyRotationController $keyRotationController;
     private AuthController $authController;
     private ClientController $clientController;
-    private SalesPersonController $salesPersonController;
-    private SalesManagerController $salesManagerController;
     private AnalyticsController $analyticsController;
     private FileUploadController $fileUploadController;
     private FormConfigController $formConfigController;
+    private RoleController $roleController;
+    private \App\Controllers\TransactionController $transactionController;
+    private ServiceController $serviceController;
     private JwtService $jwtService;
     private AuthService $authService;
 
@@ -38,11 +39,12 @@ class Routes
         KeyRotationController $keyRotationController,
         AuthController $authController,
         ClientController $clientController,
-        SalesPersonController $salesPersonController,
-        SalesManagerController $salesManagerController,
         AnalyticsController $analyticsController,
         FileUploadController $fileUploadController,
         FormConfigController $formConfigController,
+        RoleController $roleController,
+        \App\Controllers\TransactionController $transactionController,
+        ServiceController $serviceController,
         JwtService $jwtService,
         AuthService $authService
     ) {
@@ -51,11 +53,12 @@ class Routes
         $this->keyRotationController = $keyRotationController;
         $this->authController = $authController;
         $this->clientController = $clientController;
-        $this->salesPersonController = $salesPersonController;
-        $this->salesManagerController = $salesManagerController;
         $this->analyticsController = $analyticsController;
         $this->fileUploadController = $fileUploadController;
         $this->formConfigController = $formConfigController;
+        $this->roleController = $roleController;
+        $this->transactionController = $transactionController;
+        $this->serviceController = $serviceController;
         $this->jwtService = $jwtService;
         $this->authService = $authService;
     }
@@ -141,9 +144,39 @@ class Routes
             return;
         }
 
+        // Transaction routes - protected
+        if ($parts[0] === 'transactions') {
+            $this->requireAuth();
+            $this->handleTransactionRoutes($method, $parts);
+            return;
+        }
+
         // Form configurations routes
         if ($parts[0] === 'form-configs') {
             $this->handleFormConfigRoutes($method, $parts);
+            return;
+        }
+
+        // Roles and permissions routes (admin only)
+        if ($parts[0] === 'roles') {
+            $this->requireAuth();
+            $this->requireAdmin();
+            $this->handleRoleRoutes($method, $parts);
+            return;
+        }
+
+        // Permissions routes (admin only)
+        if ($parts[0] === 'permissions') {
+            $this->requireAuth();
+            $this->requireAdmin();
+            $this->handlePermissionRoutes($method, $parts);
+            return;
+        }
+
+        // Services routes (admin can manage, others can view)
+        if ($parts[0] === 'services') {
+            $this->requireAuth();
+            $this->handleServiceRoutes($method, $parts);
             return;
         }
 
@@ -202,6 +235,13 @@ class Routes
             $this->requireAuth();
             $this->requireAdmin();
             $this->authController->getPendingUsers();
+            return;
+        }
+
+        // GET /api/auth/users (protected - all authenticated users)
+        if (count($parts) === 2 && $parts[1] === 'users' && $method === 'GET') {
+            $this->requireAuth();
+            $this->authController->getAllUsers();
             return;
         }
 
@@ -323,10 +363,8 @@ class Routes
         $_SERVER['AUTH_USER'] = $user;
         $_SERVER['AUTH_USER_ID'] = (int)$user['id'];
         $_SERVER['AUTH_USER_ROLE'] = $user['role'] ?? 'client';
+        $_SERVER['AUTH_USER_ROLE_ID'] = isset($user['role_id']) ? (int)$user['role_id'] : null;
         $_SERVER['AUTH_USER_CLIENT_ID'] = isset($user['client_id']) ? (int)$user['client_id'] : null;
-        $_SERVER['AUTH_USER_SALES_MANAGER_ID'] = isset($user['sales_manager_id']) ? (int)$user['sales_manager_id'] : null;
-        $_SERVER['AUTH_USER_SALES_PERSON_ID'] = isset($user['sales_person_id']) ? (int)$user['sales_person_id'] : null;
-        $_SERVER['AUTH_USER_EMPLOYEE_ID'] = isset($user['employee_id']) ? (int)$user['employee_id'] : null;
     }
 
     private function requireAdmin(): void
@@ -355,26 +393,56 @@ class Routes
             return;
         }
 
-        // GET /api/clients/{id} (admin, sales_manager, sales_person, employee)
-        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'GET') {
-            $id = (int)$parts[1];
-            $this->clientController->get($id);
+        // GET /api/clients/{id}/transactions - Get client transactions
+        if (count($parts) === 3 && $parts[2] === 'transactions' && $method === 'GET') {
+            $clientId = $parts[1];
+            $this->transactionController->getByClient($clientId);
+            return;
+        }
+
+        // GET /api/clients/{id}/payment-summary - Get payment summary
+        if (count($parts) === 3 && $parts[2] === 'payment-summary' && $method === 'GET') {
+            $clientId = $parts[1];
+            $this->transactionController->getClientSummary($clientId);
+            return;
+        }
+
+        // GET /api/clients/{client_id}/services - Get client services
+        if (count($parts) === 3 && $parts[2] === 'services' && $method === 'GET') {
+            $clientId = $parts[1];
+            $this->serviceController->getClientServices($clientId);
+            return;
+        }
+
+        // POST /api/clients/{client_id}/services - Assign services to client (admin only)
+        if (count($parts) === 3 && $parts[2] === 'services' && $method === 'POST') {
+            $this->requireAdmin();
+            $clientId = $parts[1];
+            $this->serviceController->assignServicesToClient($clientId);
             return;
         }
 
         // PUT /api/clients/{id} (admin only)
-        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'PUT') {
+        if (count($parts) === 2 && $method === 'PUT') {
             $this->requireAdmin();
-            $id = (int)$parts[1];
-            $this->clientController->update($id);
+            $clientId = $parts[1];
+            $this->clientController->update($clientId);
             return;
         }
 
         // DELETE /api/clients/{id} (admin only)
-        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'DELETE') {
+        if (count($parts) === 2 && $method === 'DELETE') {
             $this->requireAdmin();
-            $id = (int)$parts[1];
-            $this->clientController->delete($id);
+            $clientId = $parts[1];
+            $this->clientController->delete($clientId);
+            return;
+        }
+
+        // GET /api/clients/{id} (admin, sales_manager, sales_person, employee)
+        // This must come LAST to avoid matching sub-routes like /transactions or /services
+        if (count($parts) === 2 && $method === 'GET') {
+            $clientId = $parts[1];
+            $this->clientController->get($clientId);
             return;
         }
 
@@ -383,53 +451,10 @@ class Routes
 
     private function handleSalesRoutes(string $method, array $parts): void
     {
-        // GET /api/sales/managers (admin only)
-        if (count($parts) === 2 && $parts[1] === 'managers' && $method === 'GET') {
-            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
-            
-            // Only admin can access this
-            if ($userRole !== 'admin') {
-                $this->sendResponse(['error' => 'Forbidden - Admin access required'], 403);
-                return;
-            }
-            
-            $this->salesManagerController->getAll();
-            return;
-        }
-
-        // GET /api/sales/persons (sales_manager can view their own sales persons)
-        if (count($parts) === 2 && $parts[1] === 'persons' && $method === 'GET') {
-            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            
-            // Only sales managers can access this
-            if ($userRole !== 'sales_manager' || !$salesManagerId) {
-                $this->sendResponse(['error' => 'Forbidden - Sales manager access required'], 403);
-                return;
-            }
-            
-            // Sales manager can only view their own sales persons
-            $this->salesPersonController->getByManager($salesManagerId);
-            return;
-        }
-
-        // GET /api/sales/persons/{managerId} (for sales managers to get their sales persons)
-        if (count($parts) === 3 && $parts[1] === 'persons' && is_numeric($parts[2]) && $method === 'GET') {
-            $userRole = $_SERVER['AUTH_USER_ROLE'] ?? 'client';
-            $salesManagerId = $_SERVER['AUTH_USER_SALES_MANAGER_ID'] ?? null;
-            $requestedManagerId = (int)$parts[2];
-            
-            // Only sales managers can access this, and only their own sales persons
-            if ($userRole !== 'sales_manager' || !$salesManagerId || $salesManagerId !== $requestedManagerId) {
-                $this->sendResponse(['error' => 'Forbidden - You can only view your own sales persons'], 403);
-                return;
-            }
-            
-            $this->salesPersonController->getByManager($requestedManagerId);
-            return;
-        }
-
-        $this->sendResponse(['error' => 'Not Found'], 404);
+        // Sales routes have been deprecated - using dynamic role management instead
+        $this->sendResponse([
+            'error' => 'Sales routes deprecated. Please use dynamic role management and user endpoints instead.'
+        ], 410);
     }
 
     private function handleAnalyticsRoutes(string $method, array $parts): void
@@ -437,6 +462,53 @@ class Routes
         // GET /api/analytics
         if (count($parts) === 1 && $method === 'GET') {
             $this->analyticsController->getAnalytics();
+            return;
+        }
+
+        $this->sendResponse(['error' => 'Not Found'], 404);
+    }
+
+    private function handleTransactionRoutes(string $method, array $parts): void
+    {
+        // GET /api/transactions - Get all transactions
+        if (count($parts) === 1 && $method === 'GET') {
+            $this->transactionController->getAll();
+            return;
+        }
+
+        // POST /api/transactions - Create transaction
+        if (count($parts) === 1 && $method === 'POST') {
+            $this->transactionController->create();
+            return;
+        }
+
+        // GET /api/transactions/payment-methods - Get payment methods (no auth required)
+        if (count($parts) === 2 && $parts[1] === 'payment-methods' && $method === 'GET') {
+            $this->transactionController->getPaymentMethods();
+            return;
+        }
+
+        // GET /api/transactions/statistics - Get statistics
+        if (count($parts) === 2 && $parts[1] === 'statistics' && $method === 'GET') {
+            $this->transactionController->getStatistics();
+            return;
+        }
+
+        // GET /api/transactions/{id} - Get single transaction
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'GET') {
+            $this->transactionController->get((int)$parts[1]);
+            return;
+        }
+
+        // PUT /api/transactions/{id} - Update transaction
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'PUT') {
+            $this->transactionController->update((int)$parts[1]);
+            return;
+        }
+
+        // DELETE /api/transactions/{id} - Delete transaction
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'DELETE') {
+            $this->transactionController->delete((int)$parts[1]);
             return;
         }
 
@@ -503,6 +575,172 @@ class Routes
         if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'DELETE') {
             $id = (int)$parts[1];
             $this->formConfigController->delete($id);
+            return;
+        }
+
+        $this->sendResponse(['error' => 'Not Found'], 404);
+    }
+
+    private function handleRoleRoutes(string $method, array $parts): void
+    {
+        // GET /api/roles - Get all roles
+        if (count($parts) === 1 && $method === 'GET') {
+            $this->roleController->getAllRoles();
+            return;
+        }
+
+        // GET /api/roles/hierarchy - Get role hierarchy
+        if (count($parts) === 2 && $parts[1] === 'hierarchy' && $method === 'GET') {
+            $this->roleController->getRoleHierarchy();
+            return;
+        }
+
+        // POST /api/roles - Create role
+        if (count($parts) === 1 && $method === 'POST') {
+            $this->roleController->createRole();
+            return;
+        }
+
+        // GET /api/roles/{id} - Get role by ID
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'GET') {
+            $id = (int)$parts[1];
+            $this->roleController->getRole($id);
+            return;
+        }
+
+        // PUT /api/roles/{id} - Update role
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'PUT') {
+            $id = (int)$parts[1];
+            $this->roleController->updateRole($id);
+            return;
+        }
+
+        // DELETE /api/roles/{id} - Delete role
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'DELETE') {
+            $id = (int)$parts[1];
+            $this->roleController->deleteRole($id);
+            return;
+        }
+
+        // GET /api/roles/{id}/permissions - Get permissions for a role
+        if (count($parts) === 3 && is_numeric($parts[1]) && $parts[2] === 'permissions' && $method === 'GET') {
+            $id = (int)$parts[1];
+            $this->roleController->getRolePermissions($id);
+            return;
+        }
+
+        $this->sendResponse(['error' => 'Not Found'], 404);
+    }
+
+    private function handlePermissionRoutes(string $method, array $parts): void
+    {
+        // GET /api/permissions - Get all permissions
+        if (count($parts) === 1 && $method === 'GET') {
+            $this->roleController->getAllPermissions();
+            return;
+        }
+
+        // GET /api/permissions/resources - Get all resources
+        if (count($parts) === 2 && $parts[1] === 'resources' && $method === 'GET') {
+            $this->roleController->getResources();
+            return;
+        }
+
+        // POST /api/permissions - Create permission
+        if (count($parts) === 1 && $method === 'POST') {
+            $this->roleController->createPermission();
+            return;
+        }
+
+        // GET /api/permissions/{id} - Get permission by ID
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'GET') {
+            $id = (int)$parts[1];
+            $this->roleController->getPermission($id);
+            return;
+        }
+
+        // PUT /api/permissions/{id} - Update permission
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'PUT') {
+            $id = (int)$parts[1];
+            $this->roleController->updatePermission($id);
+            return;
+        }
+
+        // DELETE /api/permissions/{id} - Delete permission
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'DELETE') {
+            $id = (int)$parts[1];
+            $this->roleController->deletePermission($id);
+            return;
+        }
+
+        $this->sendResponse(['error' => 'Not Found'], 404);
+    }
+
+    private function handleServiceRoutes(string $method, array $parts): void
+    {
+        // GET /api/services - Get all services
+        if (count($parts) === 1 && $method === 'GET') {
+            $this->serviceController->getAllServices();
+            return;
+        }
+
+        // POST /api/services - Create service (admin only)
+        if (count($parts) === 1 && $method === 'POST') {
+            $this->requireAdmin();
+            $this->serviceController->createService();
+            return;
+        }
+
+        // GET /api/services/{id} - Get service by ID
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'GET') {
+            $id = (int)$parts[1];
+            $this->serviceController->getService($id);
+            return;
+        }
+
+        // PUT /api/services/{id} - Update service (admin only)
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'PUT') {
+            $this->requireAdmin();
+            $id = (int)$parts[1];
+            $this->serviceController->updateService($id);
+            return;
+        }
+
+        // DELETE /api/services/{id} - Delete service (admin only)
+        if (count($parts) === 2 && is_numeric($parts[1]) && $method === 'DELETE') {
+            $this->requireAdmin();
+            $id = (int)$parts[1];
+            $this->serviceController->deleteService($id);
+            return;
+        }
+
+        // GET /api/services/{id}/sub-services - Get sub-services by service ID
+        if (count($parts) === 3 && is_numeric($parts[1]) && $parts[2] === 'sub-services' && $method === 'GET') {
+            $serviceId = (int)$parts[1];
+            $this->serviceController->getSubServices($serviceId);
+            return;
+        }
+
+        // POST /api/services/sub-services - Create sub-service (admin only)
+        if (count($parts) === 2 && $parts[1] === 'sub-services' && $method === 'POST') {
+            $this->requireAdmin();
+            $this->serviceController->createSubService();
+            return;
+        }
+
+        // PUT /api/services/sub-services/{id} - Update sub-service (admin only)
+        if (count($parts) === 3 && $parts[1] === 'sub-services' && is_numeric($parts[2]) && $method === 'PUT') {
+            $this->requireAdmin();
+            $id = (int)$parts[2];
+            $this->serviceController->updateSubService($id);
+            return;
+        }
+
+        // DELETE /api/services/sub-services/{id} - Delete sub-service (admin only)
+        if (count($parts) === 3 && $parts[1] === 'sub-services' && is_numeric($parts[2]) && $method === 'DELETE') {
+            $this->requireAdmin();
+            $id = (int)$parts[2];
+            $this->serviceController->deleteSubService($id);
             return;
         }
 

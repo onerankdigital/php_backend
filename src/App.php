@@ -9,10 +9,15 @@ use App\Controllers\KeyRotationController;
 use App\Controllers\SecurityController;
 use App\Controllers\AuthController;
 use App\Controllers\ClientController;
+use App\Controllers\RoleController;
+use App\Controllers\ServiceController;
 use App\Repositories\EnquiryRepository;
 use App\Repositories\SecurityRepository;
 use App\Repositories\UserRepository;
 use App\Repositories\ClientRepository;
+use App\Repositories\RoleRepository;
+use App\Repositories\PermissionRepository;
+use App\Repositories\ServiceRepository;
 use App\Services\EmailService;
 use App\Services\EnquiryService;
 use App\Services\KeyRotationService;
@@ -20,6 +25,7 @@ use App\Services\SecurityService;
 use App\Services\JwtService;
 use App\Services\AuthService;
 use App\Services\ClientService;
+use App\Services\RoleService;
 use App\Utils\Crypto;
 use App\Utils\Tokenizer;
 use PDO;
@@ -77,54 +83,76 @@ class App
         $securityRepository = new SecurityRepository($this->db);
         $userRepository = new UserRepository($this->db);
         $clientRepository = new ClientRepository($this->db);
-        $salesManagerRepository = new \App\Repositories\SalesManagerRepository($this->db);
-        $salesPersonRepository = new \App\Repositories\SalesPersonRepository($this->db);
+        $roleRepository = new RoleRepository($this->db);
+        $permissionRepository = new PermissionRepository($this->db);
+        $userClientRepository = new \App\Repositories\UserClientRepository($this->db);
+        $userHierarchyRepository = new \App\Repositories\UserHierarchyRepository($this->db);
+        $transactionRepository = new \App\Repositories\TransactionRepository($this->db);
+        $serviceRepository = new ServiceRepository($this->db);
 
         // Services
         $tokenizer = new Tokenizer();
         $emailService = new EmailService();
         $jwtService = new JwtService();
         $securityService = new SecurityService($securityRepository);
-        $authService = new AuthService($userRepository, $jwtService, $emailService, $this->crypto, $tokenizer);
+        $authService = new AuthService($userRepository, $jwtService, $emailService, $this->crypto, $tokenizer, $roleRepository);
+        
+        // Role & Permission Services
+        $roleService = new RoleService($roleRepository, $permissionRepository);
+        $permissionService = new \App\Services\PermissionService($roleRepository, $userRepository, $userHierarchyRepository);
+        
+        // Client Service
+        $clientService = new ClientService($clientRepository, $userClientRepository, $this->crypto, $emailService, $serviceRepository, $userRepository);
+        
+        // Enquiry Service
         $enquiryService = new EnquiryService(
             $enquiryRepository,
             $this->crypto,
             $tokenizer,
-            $emailService
+            $emailService,
+            $userClientRepository,
+            $permissionService
         );
-        $clientService = new ClientService($clientRepository, $this->crypto, $salesManagerRepository, $salesPersonRepository);
-        $keyRotationService = new KeyRotationService($this->db, $emailService);
-        
-        // Sales Services
-        $salesPersonService = new \App\Services\SalesPersonService($salesManagerRepository, $salesPersonRepository, $this->crypto);
         
         // Analytics
         $analyticsRepository = new \App\Repositories\AnalyticsRepository($this->db);
         $analyticsService = new \App\Services\AnalyticsService(
             $analyticsRepository,
             $clientRepository,
+            $userClientRepository,
+            $permissionService,
             $this->crypto,
-            $tokenizer,
-            $salesManagerRepository,
-            $salesPersonRepository
+            $tokenizer
+        );
+        
+        // Key Rotation
+        $keyRotationService = new KeyRotationService($this->db, $emailService);
+
+        // Transaction Service
+        $transactionService = new \App\Services\TransactionService(
+            $transactionRepository,
+            $clientRepository,
+            $permissionService
         );
 
         // Controllers
-        $enquiryController = new EnquiryController($enquiryService, $securityService, $clientService, $salesManagerRepository, $salesPersonRepository);
+        $enquiryController = new EnquiryController($enquiryService, $securityService, $permissionService);
         $securityController = new SecurityController($securityService);
         $keyRotationController = new KeyRotationController($keyRotationService, $this->db);
         $authController = new AuthController($authService);
         $clientController = new ClientController($clientService);
-        $salesManagerService = new \App\Services\SalesManagerService($salesManagerRepository, $this->crypto);
-        $salesManagerController = new \App\Controllers\SalesManagerController($salesManagerService);
-        $salesPersonController = new \App\Controllers\SalesPersonController($salesPersonService);
-        $analyticsController = new \App\Controllers\AnalyticsController($analyticsService);
+        $analyticsController = new \App\Controllers\AnalyticsController($analyticsService, $permissionService);
         $fileUploadController = new \App\Controllers\FileUploadController();
+        $roleController = new RoleController($roleService);
+        $transactionController = new \App\Controllers\TransactionController($transactionService, $permissionService);
         
         // Form Configuration Controller
         $formConfigRepository = new \App\Repositories\FormConfigRepository($this->db);
         $formConfigService = new \App\Services\FormConfigService($formConfigRepository);
         $formConfigController = new \App\Controllers\FormConfigController($formConfigService);
+
+        // Service Controller
+        $serviceController = new ServiceController($this->db);
 
         // Routes
         $this->routes = new Routes(
@@ -133,11 +161,12 @@ class App
             $keyRotationController,
             $authController,
             $clientController,
-            $salesPersonController,
-            $salesManagerController,
             $analyticsController,
             $fileUploadController,
             $formConfigController,
+            $roleController,
+            $transactionController,
+            $serviceController,
             $jwtService,
             $authService
         );

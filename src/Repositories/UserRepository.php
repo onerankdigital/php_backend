@@ -77,55 +77,74 @@ class UserRepository
 
     public function findById(int $id): ?array
     {
-        $stmt = $this->db->prepare('SELECT id, email, role, client_id, sales_manager_id, sales_person_id, employee_id, is_approved, created_at, updated_at FROM users WHERE id = :id');
+        $stmt = $this->db->prepare('
+            SELECT u.id, u.email, u.role, u.role_id, u.client_id, u.is_approved, u.created_at, u.updated_at,
+                   r.name as role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE u.id = :id
+        ');
         $stmt->execute(['id' => $id]);
         $user = $stmt->fetch();
         return $user ?: null;
     }
 
-    public function create(string $encryptedEmail, string $passwordHash, string $role = 'client'): int
+    public function create(string $encryptedEmail, string $passwordHash, ?int $roleId = null): int
     {
-        $stmt = $this->db->prepare('INSERT INTO users (email, password_hash, role, is_approved) VALUES (:email, :password_hash, :role, :is_approved)');
-        // Admin, sales_manager, sales_person, and employee are auto-approved
-        $autoApprovedRoles = ['admin', 'sales_manager', 'sales_person', 'employee'];
-        $isApproved = in_array($role, $autoApprovedRoles) ? 1 : 0;
+        // If no roleId provided, get 'client' role by default
+        if ($roleId === null) {
+            $roleStmt = $this->db->prepare('SELECT id FROM roles WHERE name = :name LIMIT 1');
+            $roleStmt->execute(['name' => 'client']);
+            $roleRow = $roleStmt->fetch();
+            $roleId = $roleRow ? (int)$roleRow['id'] : null;
+        }
+        
+        // All users start as unapproved (admin will approve and assign role)
+        $stmt = $this->db->prepare('INSERT INTO users (email, password_hash, role_id, is_approved) VALUES (:email, :password_hash, :role_id, 0)');
         $stmt->execute([
-            'email' => $encryptedEmail, // Email is already encrypted
+            'email' => $encryptedEmail,
             'password_hash' => $passwordHash,
-            'role' => $role,
-            'is_approved' => $isApproved
+            'role_id' => $roleId
         ]);
-        return (int)$this->db->lastInsertId();
+        
+        $userId = (int)$this->db->lastInsertId();
+        
+        // Also set the old 'role' column for backward compatibility
+        if ($roleId) {
+            $roleStmt = $this->db->prepare('SELECT name FROM roles WHERE id = :id');
+            $roleStmt->execute(['id' => $roleId]);
+            $roleRow = $roleStmt->fetch();
+            if ($roleRow) {
+                $updateStmt = $this->db->prepare('UPDATE users SET role = :role WHERE id = :id');
+                $updateStmt->execute(['role' => $roleRow['name'], 'id' => $userId]);
+            }
+        }
+        
+        return $userId;
     }
 
-    public function approveUser(int $userId, int $approvedBy, ?string $role = null, ?int $clientId = null, ?int $salesManagerId = null, ?int $salesPersonId = null, ?int $employeeId = null): bool
+    public function approveUser(int $userId, int $approvedBy, ?int $roleId = null, ?int $clientId = null): bool
     {
         $sql = 'UPDATE users SET is_approved = 1, approved_at = NOW(), approved_by = :approved_by';
         $params = ['id' => $userId, 'approved_by' => $approvedBy];
         
-        if ($role !== null) {
-            $sql .= ', role = :role';
-            $params['role'] = $role;
+        if ($roleId !== null) {
+            $sql .= ', role_id = :role_id';
+            $params['role_id'] = $roleId;
+            
+            // Also update the old 'role' column for backward compatibility
+            $roleStmt = $this->db->prepare('SELECT name FROM roles WHERE id = :id');
+            $roleStmt->execute(['id' => $roleId]);
+            $roleRow = $roleStmt->fetch();
+            if ($roleRow) {
+                $sql .= ', role = :role';
+                $params['role'] = $roleRow['name'];
+            }
         }
         
         if ($clientId !== null) {
             $sql .= ', client_id = :client_id';
             $params['client_id'] = $clientId;
-        }
-        
-        if ($salesManagerId !== null) {
-            $sql .= ', sales_manager_id = :sales_manager_id';
-            $params['sales_manager_id'] = $salesManagerId;
-        }
-        
-        if ($salesPersonId !== null) {
-            $sql .= ', sales_person_id = :sales_person_id';
-            $params['sales_person_id'] = $salesPersonId;
-        }
-        
-        if ($employeeId !== null) {
-            $sql .= ', employee_id = :employee_id';
-            $params['employee_id'] = $employeeId;
         }
         
         $sql .= ' WHERE id = :id';
@@ -142,10 +161,24 @@ class UserRepository
         ]);
     }
 
+    public function getClientId(int $userId): ?int
+    {
+        $stmt = $this->db->prepare('SELECT client_id FROM users WHERE id = :id');
+        $stmt->execute(['id' => $userId]);
+        $result = $stmt->fetch();
+        return $result && $result['client_id'] ? (int)$result['client_id'] : null;
+    }
+
     public function getPendingUsers(): array
     {
         // Note: email is encrypted, so we return it as-is (will be decrypted in service layer)
-        $stmt = $this->db->prepare('SELECT id, email, role, created_at FROM users WHERE is_approved = 0 ORDER BY created_at DESC');
+        $stmt = $this->db->prepare('
+            SELECT u.id, u.email, u.role, u.role_id, u.created_at, r.name as role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE u.is_approved = 0 
+            ORDER BY u.created_at DESC
+        ');
         $stmt->execute();
         return $stmt->fetchAll();
     }
@@ -155,7 +188,12 @@ class UserRepository
      */
     public function getAllUsers(): array
     {
-        $stmt = $this->db->prepare('SELECT id, email, password_hash, role, client_id, is_approved FROM users');
+        $stmt = $this->db->prepare('
+            SELECT u.id, u.email, u.password_hash, u.role, u.role_id, u.client_id, u.is_approved,
+                   r.name as role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+        ');
         $stmt->execute();
         return $stmt->fetchAll();
     }

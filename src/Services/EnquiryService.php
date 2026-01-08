@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Repositories\EnquiryRepository;
+use App\Repositories\UserClientRepository;
 use App\Services\EmailService;
+use App\Services\PermissionService;
 use App\Utils\Crypto;
 use App\Utils\Tokenizer;
 
@@ -15,17 +17,23 @@ class EnquiryService
     private Crypto $crypto;
     private Tokenizer $tokenizer;
     private EmailService $emailService;
+    private UserClientRepository $userClientRepository;
+    private PermissionService $permissionService;
 
     public function __construct(
         EnquiryRepository $repository,
         Crypto $crypto,
         Tokenizer $tokenizer,
-        EmailService $emailService
+        EmailService $emailService,
+        UserClientRepository $userClientRepository,
+        PermissionService $permissionService
     ) {
         $this->repository = $repository;
         $this->crypto = $crypto;
         $this->tokenizer = $tokenizer;
         $this->emailService = $emailService;
+        $this->userClientRepository = $userClientRepository;
+        $this->permissionService = $permissionService;
     }
 
     public function create(array $data): array
@@ -373,6 +381,25 @@ class EnquiryService
             'file_link' => $enquiry['file_link'] ?? null,
             'extra_fields' => $extraFields,
         ];
+    }
+
+    /**
+     * Get UserClientRepository for permission checks
+     */
+    public function getUserClientRepository(): UserClientRepository
+    {
+        return $this->userClientRepository;
+    }
+
+    /**
+     * Get domains by client IDs - delegates to ClientService
+     * This is a temporary helper method for EnquiryController
+     */
+    public function getDomainsByClientIds(array $clientIds): array
+    {
+        // TODO: This should call ClientService or ClientRepository
+        // For now, returning empty array as placeholder
+        return [];
     }
 }
 
