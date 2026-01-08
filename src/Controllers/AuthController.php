@@ -315,50 +315,25 @@ class AuthController
         // Set status code
         http_response_code($statusCode);
         
-        // Get CORS origin from request - respect ALLOWED_ORIGINS config
-        // Note: CORS headers should already be set in index.php, but we ensure they're correct here
+        // Get CORS origin from request - ALWAYS use HTTP_ORIGIN header
+        // This is the standard header browsers send for CORS requests
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-        $allowedOrigin = null;
         
-        // Check if we have allowed origins configured
-        if (defined('ALLOWED_ORIGINS')) {
-            $allowedOriginsConfig = ALLOWED_ORIGINS;
-            
-            // If '*' is set, allow all origins (use the request origin)
-            if ($allowedOriginsConfig === '*' || $allowedOriginsConfig === null) {
-                $allowedOrigin = $origin ?: null;
-            } else {
-                // Parse comma-separated list or array
-                $allowedList = is_array($allowedOriginsConfig) 
-                    ? $allowedOriginsConfig 
-                    : explode(',', $allowedOriginsConfig);
-                
-                // Check if the request origin is in the allowed list
-                if ($origin) {
-                    foreach ($allowedList as $allowed) {
-                        $allowed = trim($allowed);
-                        if ($origin === $allowed || $allowed === '*') {
-                            $allowedOrigin = $origin;
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            // No config, allow the request origin if present
-            $allowedOrigin = $origin ?: null;
-        }
-        
-        // Set CORS headers (only if not already set or if we need to override)
-        if ($allowedOrigin) {
-            header("Access-Control-Allow-Origin: $allowedOrigin");
-        } else if ($origin) {
-            // Fallback: allow the origin even if not in config (for development)
+        // Always set CORS headers using the request origin (if present)
+        // This is critical for cross-origin requests to work
+        // NEVER use HTTP_HOST as it would be the API's own domain, not the frontend
+        if ($origin) {
             header("Access-Control-Allow-Origin: $origin");
+            header("Access-Control-Allow-Credentials: true");
+            error_log('AuthController::sendResponse - Setting CORS origin: ' . $origin);
+        } else {
+            // Log warning but don't set CORS header if origin is missing
+            // Setting it to the API's own domain would cause CORS errors
+            error_log('AuthController::sendResponse - WARNING: HTTP_ORIGIN header not found in request. CORS may fail.');
+            error_log('AuthController::sendResponse - Available headers: ' . json_encode(array_keys(array_filter($_SERVER, function($k) { return strpos($k, 'HTTP_') === 0; }, ARRAY_FILTER_USE_KEY))));
         }
         header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
         header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
-        header('Access-Control-Allow-Credentials: true');
         header('Access-Control-Expose-Headers: Content-Type, Authorization');
         
         // Set response headers
