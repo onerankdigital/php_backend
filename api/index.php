@@ -28,19 +28,6 @@ ini_set('error_log', $logDir . '/php_errors.log');
  ------------------------------------------------- */
 $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
 
-/**
- * Fallback for same-site requests where browsers omit Origin
- */
-if (!$origin && isset($_SERVER['HTTP_REFERER'])) {
-    $ref = parse_url($_SERVER['HTTP_REFERER']);
-    if (isset($ref['scheme'], $ref['host'])) {
-        $origin = $ref['scheme'] . '://' . $ref['host'];
-        if (isset($ref['port'])) {
-            $origin .= ':' . $ref['port'];
-        }
-    }
-}
-
 if ($origin) {
     header("Access-Control-Allow-Origin: $origin");
     header("Access-Control-Allow-Credentials: true");
@@ -50,12 +37,11 @@ if ($origin) {
     header("Vary: Origin");
 }
 
-/* Preflight */
+/* Preflight request */
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
     exit;
 }
-
 
 /* -------------------------------------------------
  | SESSION (CROSS-DOMAIN SAFE)
