@@ -5,16 +5,13 @@
  * This file handles all API requests
  */
 
-// Error reporting (disable in production)
-if (defined('DEBUG_MODE') && DEBUG_MODE) {
-    error_reporting(E_ALL);
-    ini_set('display_errors', 0); // Don't display, but log
-    ini_set('log_errors', 1);
-} else {
-    error_reporting(0);
-    ini_set('display_errors', 0);
-    ini_set('log_errors', 1);
-}
+// Start output buffering immediately to catch any unwanted output
+ob_start();
+
+// Suppress all output of warnings/notices to prevent JSON corruption
+error_reporting(E_ALL);
+ini_set('display_errors', 0); // Never display errors, only log
+ini_set('log_errors', 1);
 
 // Set execution time limit for API requests
 set_time_limit(30); // 30 seconds should be enough
@@ -61,94 +58,25 @@ $logEntry .= "  All Headers: " . print_r($headers, true) . "\n";
 
 // CORS Configuration - Support for separate frontend/backend domains
 // Check if specific allowed origins are configured in config.php
-$allowedOrigins = defined('ALLOWED_ORIGINS') ? ALLOWED_ORIGINS : null;
+// ======================
+// CORS – WITH CREDENTIALS
+// ======================
 
-if ($allowedOrigins) {
-    // Parse comma-separated list of allowed origins
-    $allowedOriginsList = array_map('trim', explode(',', $allowedOrigins));
-    
-    if ($origin && in_array($origin, $allowedOriginsList)) {
-        $allowedOrigin = $origin;
-        $logEntry .= "  Allowed origin (from config): $allowedOrigin\n";
-    } elseif ($origin) {
-        // Check if origin matches any pattern in allowed list (supports wildcards)
-        foreach ($allowedOriginsList as $allowed) {
-            if ($allowed === '*' || $origin === $allowed) {
-                $allowedOrigin = $origin;
-                $logEntry .= "  Allowed origin (matched pattern): $allowedOrigin\n";
-                break;
-            }
-        }
-    }
+$origin = $_SERVER['HTTP_ORIGIN'] ?? null;
+
+if ($origin) {
+    header("Access-Control-Allow-Origin: $origin");
+    header("Access-Control-Allow-Credentials: true");
 }
 
-// If no specific config or origin not in allowed list, use dynamic origin detection
-if (!$allowedOrigin) {
-    if ($origin) {
-        $parsedOrigin = parse_url($origin);
-        if ($parsedOrigin && isset($parsedOrigin['host'])) {
-            $host = $parsedOrigin['host'];
-            // Allow any localhost or 127.0.0.1 origin for development (with any port)
-            if ($host === 'localhost' || $host === '127.0.0.1' || strpos($host, 'localhost') !== false) {
-                $allowedOrigin = $origin; // Echo back the exact origin (including port)
-                $logEntry .= "  Allowed origin (localhost match): $allowedOrigin\n";
-            } else {
-                // For production: use the request origin if no restrictions configured
-                // This allows cross-domain requests when ALLOWED_ORIGINS is not set
-                $allowedOrigin = $origin;
-                $logEntry .= "  Allowed origin (dynamic - production mode): $allowedOrigin\n";
-            }
-        } else {
-            $logEntry .= "  Failed to parse origin: $origin\n";
-        }
-    } else {
-        $logEntry .= "  No Origin header present - this might be a direct request\n";
-    }
-}
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token");
+header("Access-Control-Expose-Headers: Content-Type, Authorization");
+header("Access-Control-Max-Age: 3600");
 
-// Fallback: use referer or host if origin not available
-if (!$allowedOrigin) {
-    $referer = $_SERVER['HTTP_REFERER'] ?? '';
-    if ($referer) {
-        $parsedReferer = parse_url($referer);
-        if ($parsedReferer && isset($parsedReferer['scheme']) && isset($parsedReferer['host'])) {
-            $allowedOrigin = $parsedReferer['scheme'] . '://' . $parsedReferer['host'];
-            if (isset($parsedReferer['port'])) {
-                $allowedOrigin .= ':' . $parsedReferer['port'];
-            }
-            $logEntry .= "  Using referer as allowed origin: $allowedOrigin\n";
-        }
-    }
-    if (!$allowedOrigin) {
-        $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $host = explode('/', $host)[0];
-        $allowedOrigin = $scheme . '://' . $host;
-        $logEntry .= "  Using fallback origin: $allowedOrigin\n";
-    }
-}
-
-// Set CORS headers - MUST be set before any output
-header("Access-Control-Allow-Origin: $allowedOrigin");
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
-header('Access-Control-Allow-Credentials: true');
-header('Access-Control-Max-Age: 3600');
-header('Access-Control-Expose-Headers: Content-Type, Authorization');
-
-$logEntry .= "  Set CORS headers - Access-Control-Allow-Origin: $allowedOrigin\n";
-$logEntry .= "  Response headers will be sent\n";
-
-// Handle preflight OPTIONS requests - MUST be after CORS headers are set
+// Preflight
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    $logEntry .= "  OPTIONS preflight request - returning 200 OK\n";
-    $logEntry .= str_repeat('-', 80) . "\n";
-    @file_put_contents($logFile, $logEntry, FILE_APPEND);
-    http_response_code(200);
-    // Ensure no output before exit
-    if (ob_get_level()) {
-        ob_end_clean();
-    }
+    http_response_code(204);
     exit;
 }
 
@@ -175,11 +103,16 @@ if (session_status() === PHP_SESSION_NONE) {
     ]);
     
     ini_set('session.use_strict_mode', '1');
-    session_start();
+    @session_start(); // Suppress any session warnings
 }
 
 // Register shutdown handler to catch fatal errors
-register_shutdown_function(function() use ($logFile, $allowedOrigin) {
+register_shutdown_function(function() use ($logFile) {
+    // Clean any output buffers first
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    
     // Only handle fatal errors, not normal exits
     $error = error_get_last();
     if ($error !== null && in_array($error['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_PARSE])) {
@@ -199,24 +132,36 @@ register_shutdown_function(function() use ($logFile, $allowedOrigin) {
         $errorLog .= str_repeat('-', 80) . "\n";
         @file_put_contents($logFile, $errorLog, FILE_APPEND);
         
+        // Get origin for CORS
+        $fatalOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        
         // Ensure CORS headers and JSON response
         if (!headers_sent()) {
             http_response_code(500);
-            header("Access-Control-Allow-Origin: $allowedOrigin");
+            if ($fatalOrigin) {
+                header("Access-Control-Allow-Origin: $fatalOrigin");
+            }
             header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
             header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
             header('Access-Control-Allow-Credentials: true');
-            header('Content-Type: application/json');
+            header('Content-Type: application/json; charset=utf-8');
         }
         
         $errorMessage = defined('DEBUG_MODE') && DEBUG_MODE
             ? $error['message'] . ' in ' . $error['file'] . ':' . $error['line']
             : 'Internal Server Error';
         
-        echo json_encode([
+        $response = json_encode([
             'error' => $errorMessage,
             'success' => false
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        
+        if ($response === false) {
+            // JSON encoding failed, send a simple error
+            $response = '{"error":"Internal Server Error","success":false}';
+        }
+        
+        echo $response;
     }
 });
 
@@ -226,9 +171,13 @@ if (!file_exists($autoloadPath)) {
     $errorMsg = "Composer autoloader not found. Please run 'composer install' in the backend directory.";
     @file_put_contents($logFile, date('Y-m-d H:i:s') . " - ERROR: $errorMsg\n", FILE_APPEND);
     
+    $autoloadOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    
     if (!headers_sent()) {
         http_response_code(500);
-        header("Access-Control-Allow-Origin: $allowedOrigin");
+        if ($autoloadOrigin) {
+            header("Access-Control-Allow-Origin: $autoloadOrigin");
+        }
         header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
         header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
         header('Access-Control-Allow-Credentials: true');
@@ -250,9 +199,13 @@ if (!file_exists($configPath)) {
     $errorMsg = "Configuration file not found. Please copy config.example.php to config.php and configure it.";
     @file_put_contents($logFile, date('Y-m-d H:i:s') . " - ERROR: $errorMsg\n", FILE_APPEND);
     
+    $configOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    
     if (!headers_sent()) {
         http_response_code(500);
-        header("Access-Control-Allow-Origin: $allowedOrigin");
+        if ($configOrigin) {
+            header("Access-Control-Allow-Origin: $configOrigin");
+        }
         header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
         header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
         header('Access-Control-Allow-Credentials: true');
@@ -276,6 +229,11 @@ try {
     $app->run();
     @file_put_contents($logFile, date('Y-m-d H:i:s') . " - App run() completed\n", FILE_APPEND);
 } catch (\Throwable $e) {
+    // Clean any output that might have been generated
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    
     // Log the error
     $errorLog = date('Y-m-d H:i:s') . " - ERROR: " . $e->getMessage() . "\n";
     $errorLog .= "  File: " . $e->getFile() . ":" . $e->getLine() . "\n";
@@ -283,24 +241,36 @@ try {
     $errorLog .= str_repeat('-', 80) . "\n";
     @file_put_contents($logFile, $errorLog, FILE_APPEND);
     
+    // Get origin for CORS
+    $errorOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    
     // Ensure CORS headers are set even on error
     if (!headers_sent()) {
         http_response_code(500);
-        header("Access-Control-Allow-Origin: $allowedOrigin");
+        if ($errorOrigin) {
+            header("Access-Control-Allow-Origin: $errorOrigin");
+        }
         header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
         header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
         header('Access-Control-Allow-Credentials: true');
-        header('Content-Type: application/json');
+        header('Content-Type: application/json; charset=utf-8');
     }
     
     $errorMessage = defined('DEBUG_MODE') && DEBUG_MODE 
         ? $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine()
         : 'Internal Server Error';
     
-    echo json_encode([
+    $response = json_encode([
         'error' => $errorMessage,
         'success' => false
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    
+    if ($response === false) {
+        // JSON encoding failed, send a simple error
+        $response = '{"error":"Internal Server Error","success":false}';
+    }
+    
+    echo $response;
     exit;
 }
 

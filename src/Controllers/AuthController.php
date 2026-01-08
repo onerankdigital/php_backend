@@ -346,24 +346,31 @@ class AuthController
         // Set response headers
         header('Content-Type: application/json; charset=utf-8');
         
+        // Encode JSON once
         $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        // Don't set Content-Length - let PHP handle it automatically
-        // header('Content-Length: ' . strlen($json));
         
-        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        // Validate JSON encoding
+        if ($json === false) {
+            error_log('AuthController::sendResponse - JSON encoding failed: ' . json_last_error_msg());
+            $json = json_encode([
+                'error' => 'Response encoding failed',
+                'success' => false
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+        
         error_log('AuthController::sendResponse - JSON length: ' . strlen($json));
+        
+        // Clean any remaining output buffers before sending
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
         
         // Send response
         error_log('AuthController::sendResponse - About to echo JSON');
         echo $json;
         error_log('AuthController::sendResponse - JSON echoed');
         
-        // Flush all output buffers
-        $levels = ob_get_level();
-        error_log('AuthController::sendResponse - Output buffer levels: ' . $levels);
-        while (ob_get_level() > 0) {
-            ob_end_flush();
-        }
+        // Flush output
         flush();
         error_log('AuthController::sendResponse - Output flushed');
         

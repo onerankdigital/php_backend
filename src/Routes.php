@@ -188,7 +188,11 @@ class Routes
         error_log('Routes::handleAuthRoutes - Method: ' . $method . ', Parts: ' . json_encode($parts));
         
         // POST /api/auth/register
-        if (count($parts) === 2 && $parts[1] === 'register' && $method === 'POST') {
+        if (count($parts) === 2 && $parts[1] === 'register') {
+            if ($method !== 'POST') {
+                $this->sendResponse(['error' => 'Method Not Allowed. Use POST.'], 405);
+                return;
+            }
             error_log('Routes::handleAuthRoutes - Calling register');
             $this->authController->register();
             error_log('Routes::handleAuthRoutes - register completed');
@@ -196,7 +200,11 @@ class Routes
         }
 
         // POST /api/auth/login
-        if (count($parts) === 2 && $parts[1] === 'login' && $method === 'POST') {
+        if (count($parts) === 2 && $parts[1] === 'login') {
+            if ($method !== 'POST') {
+                $this->sendResponse(['error' => 'Method Not Allowed. Use POST.'], 405);
+                return;
+            }
             error_log('Routes::handleAuthRoutes - Calling login');
             $this->authController->login();
             error_log('Routes::handleAuthRoutes - login completed');
