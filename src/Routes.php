@@ -265,11 +265,15 @@ class Routes
         }
 
         // All other enquiry routes require authentication
+        error_log('Routes::handleEnquiryRoutes - Calling requireAuth');
         $this->requireAuth();
+        error_log('Routes::handleEnquiryRoutes - requireAuth completed');
 
         // GET /api/enquiries
         if (count($parts) === 1 && $method === 'GET') {
+            error_log('Routes::handleEnquiryRoutes - Calling getAll');
             $this->enquiryController->getAll();
+            error_log('Routes::handleEnquiryRoutes - getAll completed');
             return;
         }
 
@@ -346,33 +350,52 @@ class Routes
 
     private function requireAuth(): void
     {
-        $token = $this->jwtService->getTokenFromRequest();
-        
-        if (!$token) {
-            $this->sendResponse(['error' => 'Unauthorized - Token required'], 401);
+        try {
+            error_log('Routes::requireAuth - Starting authentication');
+            $token = $this->jwtService->getTokenFromRequest();
+            error_log('Routes::requireAuth - Token retrieved: ' . ($token ? 'YES' : 'NO'));
+            
+            if (!$token) {
+                error_log('Routes::requireAuth - No token found, sending 401');
+                $this->sendResponse(['error' => 'Unauthorized - Token required'], 401);
+                return;
+            }
+
+            error_log('Routes::requireAuth - Validating token');
+            $tokenData = $this->jwtService->validateToken($token);
+            error_log('Routes::requireAuth - Token validation result: ' . ($tokenData ? 'VALID' : 'INVALID'));
+            
+            if (!$tokenData) {
+                error_log('Routes::requireAuth - Invalid token, sending 401');
+                $this->sendResponse(['error' => 'Unauthorized - Invalid or expired token'], 401);
+                return;
+            }
+
+            error_log('Routes::requireAuth - Getting current user');
+            // Get user data and store in $_SERVER for controllers to access
+            $user = $this->authService->getCurrentUser($token);
+            error_log('Routes::requireAuth - User retrieved: ' . ($user ? 'YES (ID: ' . ($user['id'] ?? 'N/A') . ')' : 'NO'));
+            
+            if (!$user) {
+                error_log('Routes::requireAuth - User not found, sending 401');
+                $this->sendResponse(['error' => 'Unauthorized - User not found'], 401);
+                return;
+            }
+
+            // Store authenticated user data in $_SERVER for controllers
+            $_SERVER['AUTH_USER'] = $user;
+            $_SERVER['AUTH_USER_ID'] = (int)$user['id'];
+            $_SERVER['AUTH_USER_ROLE'] = $user['role'] ?? 'client';
+            $_SERVER['AUTH_USER_ROLE_ID'] = isset($user['role_id']) ? (int)$user['role_id'] : null;
+            $_SERVER['AUTH_USER_CLIENT_ID'] = isset($user['client_id']) ? (int)$user['client_id'] : null;
+            error_log('Routes::requireAuth - Authentication successful for user ID: ' . $_SERVER['AUTH_USER_ID']);
+        } catch (\Exception $e) {
+            // Log the error for debugging
+            error_log('Routes::requireAuth - Exception: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            error_log('Routes::requireAuth - Stack trace: ' . $e->getTraceAsString());
+            $this->sendResponse(['error' => 'Unauthorized - Authentication failed'], 401);
             return;
         }
-
-        $tokenData = $this->jwtService->validateToken($token);
-        
-        if (!$tokenData) {
-            $this->sendResponse(['error' => 'Unauthorized - Invalid or expired token'], 401);
-            return;
-        }
-
-        // Get user data and store in $_SERVER for controllers to access
-        $user = $this->authService->getCurrentUser($token);
-        if (!$user) {
-            $this->sendResponse(['error' => 'Unauthorized - User not found'], 401);
-            return;
-        }
-
-        // Store authenticated user data in $_SERVER for controllers
-        $_SERVER['AUTH_USER'] = $user;
-        $_SERVER['AUTH_USER_ID'] = (int)$user['id'];
-        $_SERVER['AUTH_USER_ROLE'] = $user['role'] ?? 'client';
-        $_SERVER['AUTH_USER_ROLE_ID'] = isset($user['role_id']) ? (int)$user['role_id'] : null;
-        $_SERVER['AUTH_USER_CLIENT_ID'] = isset($user['client_id']) ? (int)$user['client_id'] : null;
     }
 
     private function requireAdmin(): void
@@ -467,9 +490,12 @@ class Routes
 
     private function handleAnalyticsRoutes(string $method, array $parts): void
     {
+        error_log('Routes::handleAnalyticsRoutes - Method: ' . $method . ', Parts count: ' . count($parts));
         // GET /api/analytics
         if (count($parts) === 1 && $method === 'GET') {
+            error_log('Routes::handleAnalyticsRoutes - Calling getAnalytics');
             $this->analyticsController->getAnalytics();
+            error_log('Routes::handleAnalyticsRoutes - getAnalytics completed');
             return;
         }
 
@@ -757,9 +783,36 @@ class Routes
 
     private function sendResponse(array $data, int $statusCode = 200): void
     {
+        error_log('Routes::sendResponse - Status: ' . $statusCode . ', Data keys: ' . implode(', ', array_keys($data)));
+        
+        // Clean any output buffers to prevent JSON corruption
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        
+        // Set CORS headers if origin is present
+        $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+        if ($origin) {
+            header("Access-Control-Allow-Origin: $origin");
+            header("Access-Control-Allow-Credentials: true");
+        }
+        header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE, PATCH');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token, X-Admin-Token');
+        
         http_response_code($statusCode);
-        header('Content-Type: application/json');
-        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        header('Content-Type: application/json; charset=utf-8');
+        
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        
+        if ($json === false) {
+            // JSON encoding failed, send a simple error
+            error_log('Routes::sendResponse - JSON encoding failed: ' . json_last_error_msg());
+            $json = '{"error":"Internal Server Error - Invalid response data","success":false}';
+        }
+        
+        error_log('Routes::sendResponse - About to echo JSON (length: ' . strlen($json) . ')');
+        echo $json;
+        error_log('Routes::sendResponse - JSON echoed, calling exit');
         exit;
     }
 }
